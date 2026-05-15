@@ -111,6 +111,19 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
 
         request = _build_messages_request(payload)
 
+        # Route through the model_router so providers see their native model
+        # name (e.g. ``deepseek-v4-flash``), not the gateway-prefixed form
+        # (``deepseek/deepseek-v4-flash``). Without this DeepSeek rejects with
+        # "Invalid request sent to provider".
+        from api.model_router import ModelRouter
+
+        router = ModelRouter(settings)
+        try:
+            routed = router.resolve_messages_request(request)
+            request = routed.request
+        except Exception as exc:
+            logger.warning("Job {} routing failed: {}", job_id, exc)
+
         workspace = resolve_workspace(request, settings)
         denylist = parse_bash_denylist(settings.agent_bash_denylist)
         extra_env = parse_bash_denylist(settings.agent_bash_extra_env)

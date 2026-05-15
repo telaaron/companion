@@ -1463,3 +1463,85 @@ hr {
 .diff-pre .diff-context {
   color: var(--fg-faint);
 }
+
+/* ============================================================ Chat sidebar — search + groups */
+
+.chat-list-filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4) var(--sp-3);
+}
+
+.chat-search,
+.chat-project-filter {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--fg);
+  font-size: var(--fs-13);
+  font-family: inherit;
+}
+
+.chat-search:focus,
+.chat-project-filter:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.session-group {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: var(--sp-1);
+}
+
+.session-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px var(--sp-4);
+  background: transparent;
+  border: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-11);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  font-family: inherit;
+}
+
+.session-group-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--fg);
+}
+
+.session-group-toggle {
+  width: 10px;
+  color: var(--fg-faint);
+}
+
+.session-group-label {
+  flex: 1;
+  font-weight: 500;
+}
+
+.session-group-count {
+  background: rgba(255, 255, 255, 0.04);
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  color: var(--fg-muted);
+  font-size: var(--fs-11);
+}
+
+.session-group-items {
+  display: flex;
+  flex-direction: column;
+}
+
+.session-group-header.collapsed {
+  opacity: 0.7;
+}

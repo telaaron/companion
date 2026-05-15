@@ -11,6 +11,7 @@ from core.tools.registry import ToolSpec, register_extras
 
 from . import env_set as env_set_executor
 from . import projects as projects_executor
+from . import search as search_executor
 
 _PROJECT_LIST = ToolSpec(
     name="ProjectList",
@@ -86,6 +87,30 @@ _PROJECT_DELETE = ToolSpec(
 )
 
 
+_SEARCH = ToolSpec(
+    name="Search",
+    description=(
+        "Keyword-rank search across the proxy's memory index (chat turns, "
+        "file edits, pinned notes). Useful for recalling earlier context. "
+        "Supports FTS5 syntax: quoted phrases, prefix * suffix, AND/OR/NOT."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "kind": {
+                "type": "string",
+                "description": "Optional filter — 'message', 'file', or 'note'.",
+            },
+            "project_id": {"type": "string"},
+            "limit": {"type": "integer", "default": 10},
+        },
+        "required": ["query"],
+    },
+    executor=search_executor.execute,
+)
+
+
 _ENV_SET = ToolSpec(
     name="EnvSet",
     description=(
@@ -116,5 +141,15 @@ register_extras(
         _PROJECT_UPDATE,
         _PROJECT_DELETE,
         _ENV_SET,
+        _SEARCH,
     ]
 )
+
+# Discover user-defined plugins (YAML in ``plugins/``) and register their
+# tools alongside the built-ins. Failure here is logged but never fatal.
+try:
+    from api.agent.plugins import load_all as _load_plugins
+
+    _load_plugins()
+except Exception:
+    pass

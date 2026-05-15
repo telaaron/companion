@@ -529,6 +529,30 @@
         )
       )
     );
+
+    // Search + project filter
+    const filterState = {
+      query: localStorage.getItem("fcc:chat:query") || "",
+      projectId: localStorage.getItem("fcc:chat:project_filter") || "",
+      collapsed: JSON.parse(localStorage.getItem("fcc:chat:collapsed") || "{}"),
+    };
+
+    const searchInput = el("input", {
+      class: "chat-search",
+      type: "search",
+      placeholder: "Search sessions…",
+      value: filterState.query,
+    });
+    const projectFilter = el("select", { class: "chat-project-filter" });
+    list.appendChild(
+      el(
+        "div",
+        { class: "chat-list-filters" },
+        searchInput,
+        projectFilter
+      )
+    );
+
     const items = el("div", { class: "chat-list-items" });
     list.appendChild(items);
 
@@ -538,53 +562,147 @@
     ]);
     const projectMap = Object.fromEntries(projects.map((p) => [p.id, p]));
 
-    if (!sessions.length) {
-      items.appendChild(
-        el(
-          "div",
-          { class: "empty" },
-          el("div", { class: "empty-icon" }, "◇"),
-          el("div", { class: "empty-title" }, "No sessions yet"),
+    // Populate project filter dropdown
+    projectFilter.innerHTML = "";
+    projectFilter.appendChild(el("option", { value: "" }, "all projects"));
+    projectFilter.appendChild(el("option", { value: "__none__" }, "no project"));
+    projects.forEach((p) => {
+      const opt = el("option", { value: p.id }, p.name);
+      if (filterState.projectId === p.id) opt.selected = true;
+      projectFilter.appendChild(opt);
+    });
+    if (filterState.projectId === "__none__") {
+      projectFilter.value = "__none__";
+    }
+
+    const renderItems = () => {
+      items.innerHTML = "";
+      const q = filterState.query.trim().toLowerCase();
+      const visible = sessions.filter((s) => {
+        if (filterState.projectId === "__none__") {
+          if (s.project_id) return false;
+        } else if (filterState.projectId && s.project_id !== filterState.projectId) {
+          return false;
+        }
+        if (!q) return true;
+        const title = (s.title || "").toLowerCase();
+        return title.includes(q);
+      });
+
+      if (!visible.length) {
+        items.appendChild(
           el(
             "div",
-            { class: "empty-sub" },
-            "Hit ‘+ new’ to start one. Sessions are stored locally and visible to Companion."
+            { class: "empty" },
+            el("div", { class: "empty-icon" }, "◇"),
+            el("div", { class: "empty-title" }, sessions.length ? "No matches" : "No sessions yet"),
+            el(
+              "div",
+              { class: "empty-sub" },
+              sessions.length
+                ? "Clear the filter or pick a different project."
+                : "Hit ‘+ new’ to start one."
+            )
           )
-        )
-      );
-    }
-    for (const s of sessions) {
-      const isActive = s.id === activeSessionId;
-      items.appendChild(
-        el(
+        );
+        return;
+      }
+
+      // Group by project (or "(no project)") — collapsible folders
+      const groups = new Map();
+      const NONE_KEY = "__none__";
+      visible.forEach((s) => {
+        const key = s.project_id || NONE_KEY;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(s);
+      });
+      // Sort groups: project name asc, no-project last
+      const orderedKeys = [...groups.keys()].sort((a, b) => {
+        if (a === NONE_KEY) return 1;
+        if (b === NONE_KEY) return -1;
+        return (projectMap[a]?.name || "").localeCompare(projectMap[b]?.name || "");
+      });
+
+      orderedKeys.forEach((key) => {
+        const group = groups.get(key);
+        const proj = key === NONE_KEY ? null : projectMap[key];
+        const label = proj ? proj.name : "(no project)";
+        const isCollapsed = !!filterState.collapsed[key];
+        const groupEl = el("div", { class: "session-group" });
+        const header = el(
           "button",
           {
-            class: "session-item" + (isActive ? " active" : ""),
-            onclick: async () => {
-              activeSessionId = s.id;
-              await renderChat();
+            class: "session-group-header" + (isCollapsed ? " collapsed" : ""),
+            type: "button",
+            onclick: () => {
+              filterState.collapsed[key] = !filterState.collapsed[key];
+              localStorage.setItem(
+                "fcc:chat:collapsed",
+                JSON.stringify(filterState.collapsed)
+              );
+              renderItems();
             },
           },
-          el("div", { class: "session-title truncate" }, s.title || "untitled"),
           el(
-            "div",
-            { class: "session-meta" },
-            el("span", {}, fmtTime(s.updated_at)),
-            s.project_id && projectMap[s.project_id]
-              ? el(
-                  "span",
-                  { class: "project-pill" },
-                  el("span", {
-                    class: "project-dot",
-                    style: { background: projectMap[s.project_id].color },
-                  }),
-                  projectMap[s.project_id].name
+            "span",
+            { class: "session-group-toggle" },
+            isCollapsed ? "▸" : "▾"
+          ),
+          proj
+            ? el("span", {
+                class: "project-dot",
+                style: { background: proj.color },
+              })
+            : null,
+          el("span", { class: "session-group-label" }, label),
+          el("span", { class: "session-group-count" }, `${group.length}`)
+        );
+        groupEl.appendChild(header);
+        if (!isCollapsed) {
+          const groupItems = el("div", { class: "session-group-items" });
+          group.forEach((s) => {
+            const isActive = s.id === activeSessionId;
+            groupItems.appendChild(
+              el(
+                "button",
+                {
+                  class: "session-item" + (isActive ? " active" : ""),
+                  onclick: async () => {
+                    activeSessionId = s.id;
+                    await renderChat();
+                  },
+                },
+                el(
+                  "div",
+                  { class: "session-title truncate" },
+                  s.title || "untitled"
+                ),
+                el(
+                  "div",
+                  { class: "session-meta" },
+                  el("span", {}, fmtTime(s.updated_at))
                 )
-              : null
-          )
-        )
-      );
-    }
+              )
+            );
+          });
+          groupEl.appendChild(groupItems);
+        }
+        items.appendChild(groupEl);
+      });
+    };
+
+    searchInput.addEventListener("input", () => {
+      filterState.query = searchInput.value;
+      localStorage.setItem("fcc:chat:query", filterState.query);
+      renderItems();
+    });
+    projectFilter.addEventListener("change", () => {
+      filterState.projectId = projectFilter.value;
+      localStorage.setItem("fcc:chat:project_filter", filterState.projectId);
+      renderItems();
+    });
+
+    renderItems();
 
     if (!activeSessionId && sessions.length) {
       activeSessionId = sessions[0].id;

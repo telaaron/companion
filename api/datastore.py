@@ -167,6 +167,16 @@ def init_schema() -> None:
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_job_events_seq
                     ON agent_job_events(job_id, seq);
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+                    kind,           -- 'message' | 'file' | 'note'
+                    title,
+                    body,
+                    ref,            -- session_id / path / id
+                    project_id UNINDEXED,
+                    ts UNINDEXED,
+                    tokenize='porter unicode61'
+                );
                 """
             )
             # Lightweight column migrations: older DBs may predate later fields.
@@ -344,6 +354,24 @@ def append_message(*, session_id: str, role: str, content: str) -> dict[str, Any
             (mid, session_id, role, content, now),
         )
         conn.execute("UPDATE sessions SET updated_at=? WHERE id=?", (now, session_id))
+    # Index into memory_fts so the Search tool can find this turn later.
+    # Look up project_id for project-scoped search filtering.
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT title, project_id FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+        title = (row["title"] if row else "") or "untitled"
+        pid = row["project_id"] if row else None
+        memory_index(
+            kind="message",
+            title=f"{role}: {title}",
+            body=content,
+            ref=mid,
+            project_id=pid,
+        )
+    except Exception:
+        pass
     return {
         "id": mid,
         "session_id": session_id,
@@ -712,6 +740,71 @@ def latest_agent_job_seq(job_id: str) -> int:
             (job_id,),
         ).fetchone()
     return int(row[0]) if row else -1
+
+
+# ============================================================ Memory / RAG
+
+
+def memory_index(
+    *,
+    kind: str,
+    title: str,
+    body: str,
+    ref: str,
+    project_id: str | None = None,
+) -> None:
+    """Add or refresh a memory row in FTS. Keyed by (kind, ref)."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "DELETE FROM memory_fts WHERE kind=? AND ref=?", (kind, ref)
+            )
+            conn.execute(
+                "INSERT INTO memory_fts (kind, title, body, ref, project_id, ts)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (kind, title or "", body or "", ref, project_id or "", _ts()),
+            )
+    except Exception as exc:
+        logger.warning("MEMORY: index failed ({})", exc)
+
+
+def memory_search(
+    query: str,
+    *,
+    kind: str | None = None,
+    project_id: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Keyword-rank search across memory_fts. Returns ordered by FTS rank."""
+    safe_query = (query or "").strip()
+    if not safe_query:
+        return []
+    where = ["memory_fts MATCH ?"]
+    args: list[Any] = [safe_query]
+    if kind:
+        where.append("kind=?")
+        args.append(kind)
+    if project_id:
+        where.append("project_id=?")
+        args.append(project_id)
+    sql = (
+        "SELECT kind, title, body, ref, project_id, ts FROM memory_fts WHERE "
+        + " AND ".join(where)
+        + " ORDER BY rank LIMIT ?"
+    )
+    args.append(limit)
+    try:
+        with _connect() as conn:
+            rows = conn.execute(sql, args).fetchall()
+    except sqlite3.OperationalError:
+        return []  # malformed FTS query
+    return [dict(r) for r in rows]
+
+
+def memory_count() -> int:
+    with _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone()
+    return int(row[0]) if row else 0
 
 
 def db_path() -> Path:

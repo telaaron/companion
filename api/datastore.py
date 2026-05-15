@@ -468,6 +468,33 @@ def list_usage(
     return [dict(r) for r in rows]
 
 
+def session_usage(session_id: str) -> dict[str, Any]:
+    """Return aggregate token + cost stats scoped to one session."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(cost_usd), 0.0)    AS cost_usd,
+              COUNT(*)                        AS events
+            FROM usage_events
+            WHERE session_id=?
+            """,
+            (session_id,),
+        ).fetchone()
+    return (
+        dict(row)
+        if row
+        else {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0.0,
+            "events": 0,
+        }
+    )
+
+
 def usage_summary(*, since_ts: int = 0) -> dict[str, Any]:
     """Aggregate stats across the configured time window."""
     with _connect() as conn:

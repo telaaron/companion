@@ -459,6 +459,52 @@
     }
   }
 
+  // Wrap a <select> with a label-prefix for the chat topbar.
+  function wrapSelect(label, select) {
+    select.classList.add("topbar-select-input");
+    return el(
+      "label",
+      { class: "topbar-select" },
+      el("span", { class: "topbar-select-label" }, label),
+      select
+    );
+  }
+
+  async function refreshSessionUsage(sessionId, badgeEl) {
+    try {
+      const usage = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/usage`);
+      const total = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      const tokens = badgeEl.querySelector(".chat-usage-tokens");
+      const cost = badgeEl.querySelector(".chat-usage-cost");
+      if (tokens) tokens.textContent = fmtTokens(total);
+      if (cost) cost.textContent = fmtUsd(usage.cost_usd || 0);
+    } catch {
+      /* no-op — show defaults */
+    }
+  }
+
+  function fmtTokens(n) {
+    if (!n) return "0 tok";
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M tok";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "k tok";
+    return `${n} tok`;
+  }
+
+  // Quick-save: build a synthetic prompt that asks the AI to summarise the
+  // conversation + push to the configured Obsidian vault. Falls back to
+  // toast if no vault tool is available.
+  async function saveSessionToVault(session, modelSelected, messagesHost) {
+    const today = new Date().toISOString().slice(0, 10);
+    const prompt =
+      "Summarise the key insights, decisions, and TODOs from this " +
+      "conversation as a concise Markdown note. Then call the Obsidian " +
+      "Append tool to save it under `" +
+      `Companion/${today}-${(session.title || "untitled").replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 40)}.md` +
+      "`. If no Obsidian vault tool is registered, write the note to " +
+      "`AGENTS.md` instead and tell me which path you used.";
+    await sendInChat(session, modelSelected, prompt, messagesHost);
+  }
+
   function deriveSessionTitle(text) {
     const cleaned = (text || "")
       .trim()
@@ -833,11 +879,30 @@
       )
     );
 
+    const usageBadge = el(
+      "div",
+      { class: "chat-usage", title: "Token + cost for this conversation" },
+      el("span", { class: "chat-usage-tokens" }, "0 tok"),
+      el("span", { class: "chat-usage-sep" }, "·"),
+      el("span", { class: "chat-usage-cost" }, "$0.000")
+    );
+    void refreshSessionUsage(session.id, usageBadge);
+
+    const vaultBtn = el(
+      "button",
+      {
+        class: "icon-btn",
+        title: "Save key insights to Obsidian vault",
+        onclick: () => saveSessionToVault(session, modelSelect.value, messages),
+      },
+      "📓"
+    );
+
     const deleteBtn = el(
       "button",
       {
-        class: "danger ghost",
-        title: "delete",
+        class: "icon-btn icon-btn-danger",
+        title: "Delete session",
         onclick: async () => {
           if (!confirm("Delete this session?")) return;
           await deleteSession(session.id);
@@ -848,7 +913,24 @@
       "✕"
     );
 
-    topbar.append(title, projectSelect, modelSelect, deleteBtn);
+    const titleRow = el(
+      "div",
+      { class: "chat-topbar-titlerow" },
+      title,
+      usageBadge
+    );
+    const controlsRow = el(
+      "div",
+      { class: "chat-topbar-controls" },
+      el(
+        "div",
+        { class: "chat-topbar-selects" },
+        wrapSelect("project", projectSelect),
+        wrapSelect("model", modelSelect)
+      ),
+      el("div", { class: "chat-topbar-actions" }, vaultBtn, deleteBtn)
+    );
+    topbar.append(titleRow, controlsRow);
     host.appendChild(topbar);
 
     const messages = el("div", { class: "messages" });
@@ -1214,6 +1296,9 @@
         console.warn("persist failed:", e);
       }
       void refreshFooterMetrics();
+      // Refresh per-chat token + cost counter.
+      const badge = document.querySelector(".chat-usage");
+      if (badge) void refreshSessionUsage(session.id, badge);
       // Async auto-rename via the model if still untitled.
       void maybeRenameSessionAsync(session, assistant.content);
     }
@@ -1283,68 +1368,133 @@
       return;
     }
 
-    const grid = el("div", { class: "grid-cards" });
+    // Pull all sessions once + bucket by project for the cards below.
+    const allSessions = await loadSessions();
+    const byProject = new Map();
+    for (const s of allSessions) {
+      if (!s.project_id) continue;
+      if (!byProject.has(s.project_id)) byProject.set(s.project_id, []);
+      byProject.get(s.project_id).push(s);
+    }
+
     for (const p of projects) {
-      grid.appendChild(
+      const sessions = byProject.get(p.id) || [];
+      const card = el("article", { class: "project-card" });
+
+      const header = el(
+        "div",
+        { class: "project-card-header" },
+        el("div", {
+          class: "project-card-color",
+          style: { background: p.color || "#6366f1" },
+        }),
         el(
           "div",
-          {
-            class: "card",
-            style: { borderLeft: `3px solid ${p.color || "#6366f1"}` },
-          },
+          { class: "project-card-meta" },
+          el("div", { class: "project-card-name" }, p.name),
           el(
             "div",
-            { class: "card-title" },
-            el("span", {}, p.name),
-            el(
-              "button",
-              {
-                class: "ghost",
-                title: "edit",
-                onclick: () => editProject(p),
-              },
-              "✎"
-            )
-          ),
-          el("div", { class: "card-sub truncate" }, p.description || "—"),
+            { class: "project-card-desc" },
+            p.description || (p.workspace_path
+              ? el("span", { class: "mono" }, p.workspace_path)
+              : "—")
+          )
+        ),
+        el(
+          "div",
+          { class: "project-card-actions" },
           el(
-            "div",
-            { class: "muted", style: { fontSize: "12px" } },
-            (p.shared_context || "").slice(0, 160) ||
-              el("span", { class: "faint" }, "no shared context")
+            "button",
+            {
+              class: "icon-btn",
+              title: "Edit",
+              onclick: () => editProject(p),
+            },
+            "✎"
           ),
           el(
-            "div",
-            { class: "row", style: { marginTop: "12px" } },
-            el(
-              "button",
-              {
-                onclick: () => {
-                  activeSessionId = null;
-                  setRoute("chat");
-                },
+            "button",
+            {
+              class: "icon-btn",
+              title: "New chat in this project",
+              onclick: async () => {
+                const s = await createSession({
+                  title: "untitled",
+                  model: "",
+                  project_id: p.id,
+                });
+                activeSessionId = s.id;
+                setRoute("chat");
               },
-              "Open in chat"
-            ),
-            el(
-              "button",
-              {
-                class: "danger ghost right",
-                onclick: async () => {
-                  if (!confirm(`Delete project ${p.name}?`)) return;
-                  await api(`/v1/projects/${encodeURIComponent(p.id)}`, {
-                    method: "DELETE",
-                  });
-                  renderProjects();
-                },
+            },
+            "+"
+          ),
+          el(
+            "button",
+            {
+              class: "icon-btn icon-btn-danger",
+              title: "Delete project",
+              onclick: async () => {
+                if (!confirm(`Delete project ${p.name}?`)) return;
+                await api(`/v1/projects/${encodeURIComponent(p.id)}`, {
+                  method: "DELETE",
+                });
+                renderProjects();
               },
-              "Delete"
-            )
+            },
+            "✕"
           )
         )
       );
+      card.appendChild(header);
+
+      const sessList = el("div", { class: "project-sessions" });
+      if (!sessions.length) {
+        sessList.appendChild(
+          el(
+            "div",
+            { class: "project-sessions-empty" },
+            "No sessions yet — click + to start one"
+          )
+        );
+      } else {
+        for (const s of sessions.slice(0, 12)) {
+          sessList.appendChild(
+            el(
+              "div",
+              {
+                class: "project-session-row",
+                onclick: () => {
+                  activeSessionId = s.id;
+                  setRoute("chat");
+                },
+              },
+              el(
+                "span",
+                { class: "project-session-title" },
+                s.title || "untitled"
+              ),
+              el(
+                "span",
+                { class: "project-session-time" },
+                fmtTime(s.updated_at)
+              )
+            )
+          );
+        }
+        if (sessions.length > 12) {
+          sessList.appendChild(
+            el(
+              "div",
+              { class: "project-sessions-empty" },
+              `+ ${sessions.length - 12} more`
+            )
+          );
+        }
+      }
+      card.appendChild(sessList);
+      body.appendChild(card);
     }
-    body.appendChild(grid);
   }
 
   async function editProject(existing) {

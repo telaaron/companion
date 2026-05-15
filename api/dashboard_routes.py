@@ -143,6 +143,15 @@ async def get_session_route(
     return {**session, "messages": messages}
 
 
+@dashboard_router.get("/v1/sessions/{session_id}/usage")
+async def session_usage_route(
+    session_id: str, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    if datastore.get_session(session_id) is None:
+        raise HTTPException(404, "session not found")
+    return datastore.session_usage(session_id)
+
+
 @dashboard_router.put("/v1/sessions/{session_id}")
 async def update_session_route(
     session_id: str, body: SessionIn, _auth=Depends(require_api_key)

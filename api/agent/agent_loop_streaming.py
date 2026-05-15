@@ -21,6 +21,7 @@ from api.agent.agent_loop import (
     ToolInvocation,
     _build_request_for_turn,
     _clone_messages,
+    build_identity_prompt,
     dispatch_tool_audited,
 )
 from api.agent.rate_limit import ToolCallRateLimiter
@@ -62,6 +63,7 @@ async def run_agent_streaming(
         bash_denylist=bash_denylist,
         bash_extra_env_allowlist=bash_extra_env_allowlist,
     )
+    identity_prompt = build_identity_prompt(request.model, str(workspace.root))
 
     halt_reason: str | None = None
     halt_sequence: str | None = None
@@ -69,7 +71,9 @@ async def run_agent_streaming(
     for turn_no in range(1, max_turns + 1):
         is_first_turn = turn_no == 1
 
-        upstream_request = _build_request_for_turn(request, working_messages)
+        upstream_request = _build_request_for_turn(
+            request, working_messages, identity_prompt=identity_prompt
+        )
         upstream = provider.stream_response(upstream_request, request_id=request_id)
 
         state = TurnState()

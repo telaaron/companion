@@ -547,6 +547,10 @@
       messages,
       metadata: {
         user_id: `fcc:project_id=${session.project_id || ""},session_id=${session.id}`,
+        // Routed through workspace_resolver so the agent loop sandboxes Bash
+        // and file ops to this project's directory when set.
+        project_id: session.project_id || null,
+        session_id: session.id,
       },
     };
 
@@ -765,6 +769,10 @@
       rows: 10,
     });
     ctxIn.value = existing?.shared_context || "";
+    const wsIn = el("input", {
+      value: existing?.workspace_path || "",
+      placeholder: "/Users/you/projects/nureine",
+    });
 
     card.append(
       el(
@@ -784,6 +792,17 @@
         { class: "field" },
         el("label", { class: "field-label" }, "Color"),
         colorIn
+      ),
+      el(
+        "div",
+        { class: "field" },
+        el("label", { class: "field-label" }, "Workspace path"),
+        wsIn,
+        el(
+          "div",
+          { class: "field-help" },
+          "Sandboxed root for the agent loop when sessions in this project run. Overrides AGENT_DEFAULT_WORKSPACE."
+        )
       ),
       el(
         "div",
@@ -809,6 +828,7 @@
                 description: descIn.value.trim(),
                 shared_context: ctxIn.value,
                 color: colorIn.value,
+                workspace_path: wsIn.value.trim(),
               };
               if (existing) {
                 await api(`/v1/projects/${encodeURIComponent(existing.id)}`, {
@@ -1527,37 +1547,43 @@
       el(
         "div",
         { class: "grid-cards" },
-        kvCard("Agent mode", {
-          enabled: String(agent.enabled ?? false),
-          workspace: agent.workspace || "—",
-          max_turns: agent.max_turns ?? "—",
-          tool_call_limit_per_min: agent.tool_call_limit_per_min ?? "—",
-          global_tool_call_limit_per_min:
-            agent.global_tool_call_limit_per_min ?? "—",
-          bash_denylist: agent.bash_denylist || "—",
-          bash_extra_env: agent.bash_extra_env || "—",
-        }),
-        kvCard("Models", {
-          MODEL: data.model,
-          MODEL_OPUS: data.model_opus || "—",
-          MODEL_SONNET: data.model_sonnet || "—",
-          MODEL_HAIKU: data.model_haiku || "—",
-          MODEL_SUBAGENT: data.model_subagent || "—",
-          MODEL_FALLBACK_CHAIN: data.model_fallback_chain || "—",
-        }),
-        kvCard("Thinking", {
-          default_enabled: String(data.thinking?.default_enabled),
-          budget_max: data.thinking?.budget_max ?? "—",
-        }),
-        kvCard("Image gen", {
-          provider: data.image_gen?.provider || "—",
-          model: data.image_gen?.model || "—",
-        }),
-        kvCard("Vision fallback", {
-          provider: data.deepseek_image_fallback?.provider || "—",
-          model: data.deepseek_image_fallback?.model || "—",
-        }),
-        kvCard("Server", {
+        editableKvCard("Agent mode", [
+          { label: "enabled", value: String(agent.enabled ?? false), envKey: "AGENT_MODE_ENABLED" },
+          { label: "workspace", value: agent.workspace || "", envKey: "AGENT_DEFAULT_WORKSPACE" },
+          { label: "max_turns", value: agent.max_turns ?? 10, envKey: "AGENT_MAX_TURNS", type: "number" },
+          { label: "tool_call_limit_per_min", value: agent.tool_call_limit_per_min ?? 60, envKey: "AGENT_TOOL_CALL_LIMIT_PER_MIN", type: "number" },
+          { label: "global_tool_call_limit_per_min", value: agent.global_tool_call_limit_per_min ?? 0, envKey: "AGENT_GLOBAL_TOOL_CALL_LIMIT_PER_MIN", type: "number" },
+          { label: "bash_denylist", value: agent.bash_denylist || "", envKey: "AGENT_BASH_DENYLIST" },
+          { label: "bash_extra_env", value: agent.bash_extra_env || "", envKey: "AGENT_BASH_EXTRA_ENV" },
+        ]),
+        editableKvCard("Models", [
+          { label: "MODEL", value: data.model, envKey: "MODEL" },
+          { label: "MODEL_OPUS", value: data.model_opus || "", envKey: "MODEL_OPUS" },
+          { label: "MODEL_SONNET", value: data.model_sonnet || "", envKey: "MODEL_SONNET" },
+          { label: "MODEL_HAIKU", value: data.model_haiku || "", envKey: "MODEL_HAIKU" },
+          { label: "MODEL_SUBAGENT", value: data.model_subagent || "", envKey: "MODEL_SUBAGENT" },
+          { label: "MODEL_FALLBACK_CHAIN", value: data.model_fallback_chain || "", envKey: "MODEL_FALLBACK_CHAIN" },
+        ]),
+        editableKvCard("Thinking", [
+          { label: "default_enabled", value: String(data.thinking?.default_enabled), envKey: "ENABLE_MODEL_THINKING" },
+          { label: "budget_max", value: data.thinking?.budget_max ?? "", envKey: "THINKING_BUDGET_MAX", type: "number" },
+        ]),
+        editableKvCard("Image gen", [
+          { label: "provider", value: data.image_gen?.provider || "", envKey: "IMAGE_GEN_PROVIDER" },
+          { label: "model", value: data.image_gen?.model || "", envKey: "IMAGE_GEN_MODEL" },
+        ]),
+        editableKvCard("Vision fallback", [
+          { label: "provider", value: data.deepseek_image_fallback?.provider || "", envKey: "DEEPSEEK_IMAGE_FALLBACK_PROVIDER" },
+          { label: "model", value: data.deepseek_image_fallback?.model || "", envKey: "DEEPSEEK_IMAGE_FALLBACK_MODEL" },
+        ]),
+        editableKvCard("API tokens (cloud)", [
+          { label: "GITHUB_TOKEN", value: "", envKey: "GITHUB_TOKEN", secret: true },
+          { label: "VERCEL_TOKEN", value: "", envKey: "VERCEL_TOKEN", secret: true },
+          { label: "SUPABASE_URL", value: "", envKey: "SUPABASE_URL" },
+          { label: "SUPABASE_SERVICE_ROLE_KEY", value: "", envKey: "SUPABASE_SERVICE_ROLE_KEY", secret: true },
+          { label: "OPENAI_API_KEY", value: "", envKey: "OPENAI_API_KEY", secret: true },
+        ]),
+        kvCard("Server (restart required)", {
           host: data.host,
           port: data.port,
           auth_set: String(data.anthropic_auth_token_set),
@@ -1684,6 +1710,128 @@
         )
       )
     );
+  }
+
+  // editableKvCard: like kvCard but each row can be edited via inline input.
+  // rows: [{ label, value, envKey, secret?, type? }] — envKey present ⇒ editable.
+  function editableKvCard(title, rows) {
+    const tbody = el("tbody", {});
+    rows.forEach((row) => {
+      const valueCell = el("td", { class: "mono" });
+      const renderDisplay = () => {
+        valueCell.innerHTML = "";
+        const displayVal =
+          row.secret && row.value
+            ? "•".repeat(8)
+            : row.value === "" || row.value == null
+              ? "—"
+              : String(row.value);
+        const span = el(
+          "span",
+          { class: "truncate", style: { flex: "1" } },
+          displayVal
+        );
+        valueCell.appendChild(
+          el(
+            "div",
+            { class: "row gap-2 align-center" },
+            span,
+            row.envKey
+              ? el(
+                  "button",
+                  {
+                    class: "btn btn-ghost btn-sm",
+                    type: "button",
+                    title: "Edit",
+                    onclick: () => beginEdit(),
+                  },
+                  "✎"
+                )
+              : null
+          )
+        );
+      };
+      const beginEdit = () => {
+        valueCell.innerHTML = "";
+        const input = el("input", {
+          class: "form-input",
+          type: row.secret ? "password" : row.type === "number" ? "number" : "text",
+          value: row.value == null ? "" : String(row.value),
+          style: { flex: "1", padding: "4px 8px", fontSize: "13px" },
+        });
+        const save = el(
+          "button",
+          {
+            class: "btn btn-primary btn-sm",
+            type: "button",
+            onclick: async () => {
+              const newVal = input.value;
+              save.disabled = true;
+              try {
+                await api("/v1/env", {
+                  method: "PUT",
+                  body: JSON.stringify({ key: row.envKey, value: newVal }),
+                });
+                row.value = newVal;
+                toastShow(`Saved ${row.envKey}`, "ok");
+                renderDisplay();
+              } catch (e) {
+                toastShow(`Save failed: ${e.message}`, "error");
+                save.disabled = false;
+              }
+            },
+          },
+          "Save"
+        );
+        const cancel = el(
+          "button",
+          {
+            class: "btn btn-ghost btn-sm",
+            type: "button",
+            onclick: () => renderDisplay(),
+          },
+          "Cancel"
+        );
+        valueCell.appendChild(
+          el("div", { class: "row gap-2 align-center" }, input, save, cancel)
+        );
+        input.focus();
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") save.click();
+          if (e.key === "Escape") renderDisplay();
+        });
+      };
+      renderDisplay();
+      tbody.appendChild(
+        el(
+          "tr",
+          { "data-env-key": row.envKey || "" },
+          el(
+            "td",
+            { class: "mono", style: { width: "40%", color: "var(--fg-muted)" } },
+            row.label
+          ),
+          valueCell
+        )
+      );
+    });
+    return el(
+      "div",
+      { class: "card" },
+      el("div", { class: "card-title" }, title),
+      el("table", { class: "table" }, tbody)
+    );
+  }
+
+  function toastShow(message, level = "ok") {
+    let stack = document.querySelector("#fcc-toasts");
+    if (!stack) {
+      stack = el("div", { id: "fcc-toasts", class: "toast-stack" });
+      document.body.appendChild(stack);
+    }
+    const t = el("div", { class: `toast toast-${level}` }, message);
+    stack.appendChild(t);
+    setTimeout(() => t.remove(), 3200);
   }
 
   // ============================================================ Capabilities panel

@@ -54,6 +54,7 @@ class ProjectIn(BaseModel):
     description: str = Field(default="", max_length=4000)
     shared_context: str = Field(default="", max_length=20000)
     color: str = Field(default="#6366f1", max_length=16)
+    workspace_path: str = Field(default="", max_length=4096)
 
 
 @dashboard_router.get("/v1/projects")
@@ -70,6 +71,7 @@ async def create_project(
         description=body.description,
         shared_context=body.shared_context,
         color=body.color,
+        workspace_path=body.workspace_path,
     )
 
 
@@ -93,6 +95,7 @@ async def update_project(
         description=body.description,
         shared_context=body.shared_context,
         color=body.color,
+        workspace_path=body.workspace_path,
     )
 
 
@@ -356,6 +359,13 @@ async def env_set(body: EnvSetIn, _auth=Depends(require_api_key)) -> dict[str, A
         metadata={"secret": _looks_secret(key)},
     )
     logger.info("ENV: upsert key={} (secret={})", key, _looks_secret(key))
+    # Invalidate cached Settings so the next request reflects the new env.
+    # We also push the value into os.environ so live readers see the change
+    # without waiting for a process restart.
+    from config.settings import get_settings as _get_cached_settings
+
+    os.environ[key] = body.value
+    _get_cached_settings.cache_clear()
     return {"key": key, "ok": True}
 
 

@@ -93,13 +93,30 @@ def test_extra_env_allowlist_passes_through_safe_var() -> None:
     assert cleaned["NODE_OPTIONS"] == "--max-old-space-size=4096"
 
 
-def test_extra_env_allowlist_cannot_unblock_secret() -> None:
+def test_extra_env_allowlist_unblocks_credentials_when_user_consents() -> None:
+    """Explicit allowlist is the user's escape hatch for cloud CLI tokens.
+
+    gh / vercel / supabase need credential-named env vars. Naming them in the
+    allowlist counts as consent; the sanitizer passes them through.
+    """
     env = {
         "PATH": "/usr/bin",
         "MY_SECRET_TOKEN": "leak-me",
         "GITHUB_TOKEN": "ghp_xxx",
     }
     cleaned = _sanitize_env(env, extra_allowlist=("MY_SECRET_TOKEN", "GITHUB_TOKEN"))
+    assert cleaned["MY_SECRET_TOKEN"] == "leak-me"
+    assert cleaned["GITHUB_TOKEN"] == "ghp_xxx"
+
+
+def test_default_sanitize_still_blocks_credential_named_vars() -> None:
+    """Without explicit allowlist, credential-named vars stay blocked."""
+    env = {
+        "PATH": "/usr/bin",
+        "MY_SECRET_TOKEN": "leak-me",
+        "GITHUB_TOKEN": "ghp_xxx",
+    }
+    cleaned = _sanitize_env(env)
     assert "MY_SECRET_TOKEN" not in cleaned
     assert "GITHUB_TOKEN" not in cleaned
 

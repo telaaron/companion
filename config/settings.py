@@ -206,7 +206,7 @@ class Settings(BaseSettings):
     # ==================== Model ====================
     # All Claude model requests are mapped to this single model (fallback)
     # Format: provider_type/model/name
-    model: str = "nvidia_nim/z-ai/glm4.7"
+    model: str = "deepseek/deepseek-v4-flash"
 
     # Per-model overrides (optional, falls back to MODEL)
     # Each can use a different provider
@@ -335,9 +335,17 @@ class Settings(BaseSettings):
     )
     # Comma-separated env-var names to pass through to Bash subprocesses in
     # addition to the built-in safe prefixes. Names matching the credential
-    # denylist (TOKEN/SECRET/etc.) are still stripped.
+    # denylist (TOKEN/SECRET/etc.) are still stripped — so cloud CLIs that
+    # rely on credential-named vars need explicit allowlisting here. The
+    # default whitelists common cloud-CLI vars so `gh`, `vercel`, and
+    # `supabase` work out of the box once the user adds their tokens.
     agent_bash_extra_env: str = Field(
-        default="", validation_alias="AGENT_BASH_EXTRA_ENV"
+        default=(
+            "GITHUB_TOKEN,GH_TOKEN,VERCEL_TOKEN,SUPABASE_URL,"
+            "SUPABASE_SERVICE_ROLE_KEY,SUPABASE_ANON_KEY,"
+            "OPENAI_API_KEY,ANTHROPIC_API_KEY"
+        ),
+        validation_alias="AGENT_BASH_EXTRA_ENV",
     )
 
     # ==================== Debug / diagnostic logging (avoid sensitive content) ====================

@@ -63,6 +63,7 @@ def init_schema() -> None:
                     description TEXT NOT NULL DEFAULT '',
                     shared_context TEXT NOT NULL DEFAULT '',
                     color TEXT NOT NULL DEFAULT '#6366f1',
+                    workspace_path TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -138,6 +139,14 @@ def init_schema() -> None:
                     ON audit_log(category, ts DESC);
                 """
             )
+            # Lightweight column migrations: older DBs may predate later fields.
+            import contextlib
+
+            for column_sql in (
+                "ALTER TABLE projects ADD COLUMN workspace_path TEXT NOT NULL DEFAULT ''",
+            ):
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(column_sql)
             _INIT_DONE = True
         finally:
             conn.close()
@@ -173,6 +182,7 @@ def upsert_project(
     description: str = "",
     shared_context: str = "",
     color: str = "#6366f1",
+    workspace_path: str = "",
 ) -> dict[str, Any]:
     pid = project_id or f"prj_{uuid.uuid4().hex[:12]}"
     now = _ts()
@@ -185,20 +195,37 @@ def upsert_project(
                 """
                 UPDATE projects
                    SET name=?, description=?, shared_context=?, color=?,
-                       updated_at=?
+                       workspace_path=?, updated_at=?
                  WHERE id=?
                 """,
-                (name, description, shared_context, color, now, pid),
+                (
+                    name,
+                    description,
+                    shared_context,
+                    color,
+                    workspace_path,
+                    now,
+                    pid,
+                ),
             )
         else:
             conn.execute(
                 """
                 INSERT INTO projects
                   (id, name, description, shared_context, color,
-                   created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                   workspace_path, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (pid, name, description, shared_context, color, now, now),
+                (
+                    pid,
+                    name,
+                    description,
+                    shared_context,
+                    color,
+                    workspace_path,
+                    now,
+                    now,
+                ),
             )
     got = get_project(pid)
     assert got is not None

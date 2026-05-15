@@ -106,9 +106,12 @@ async def run_agent_to_completion(
         bash_denylist=bash_denylist,
         bash_extra_env_allowlist=bash_extra_env_allowlist,
     )
+    identity_prompt = build_identity_prompt(request.model, str(workspace.root))
 
     for turn in range(1, max_turns + 1):
-        upstream_request = _build_request_for_turn(request, working_messages)
+        upstream_request = _build_request_for_turn(
+            request, working_messages, identity_prompt=identity_prompt
+        )
         stream = provider.stream_response(upstream_request, request_id=request_id)
         final = await collect(stream)
 
@@ -286,8 +289,29 @@ async def _dispatch_tool(
     return ToolInvocation(tool_use_id, name, tool_input, result)
 
 
+_IDENTITY_PROMPT_TEMPLATE = (
+    "You are running through the free-claude-code proxy. "
+    "The underlying model identifier is `{model}`. "
+    "Do NOT claim to be Claude or any other AI — answer accurately about what "
+    "you actually are when asked. "
+    "You have access to local sandboxed tools (Read, Write, Edit, LS, Glob, "
+    "Grep, Bash) inside the workspace at `{workspace}`. "
+    "Cloud CLIs you may have access to via the Bash tool (if installed + token "
+    "configured): gh (GitHub), vercel (Vercel), supabase (Supabase). "
+    "Token env vars present in your shell: GITHUB_TOKEN, VERCEL_TOKEN, "
+    "SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY. "
+    "Prefer the local tools over describing what you would do."
+)
+
+
+def build_identity_prompt(model: str, workspace: str) -> str:
+    return _IDENTITY_PROMPT_TEMPLATE.format(
+        model=model or "unknown", workspace=workspace or "(cwd)"
+    )
+
+
 def _build_request_for_turn(
-    request: MessagesRequest, messages: list[Any]
+    request: MessagesRequest, messages: list[Any], *, identity_prompt: str | None = None
 ) -> MessagesRequest:
     """Return a copy of ``request`` with refreshed ``messages`` and tools merged."""
     tool_defs = tool_registry.anthropic_tool_definitions()
@@ -299,7 +323,15 @@ def _build_request_for_turn(
             continue
         merged.append(Tool(**defn))
 
-    return request.model_copy(update={"messages": messages, "tools": merged})
+    update: dict[str, Any] = {"messages": messages, "tools": merged}
+    if identity_prompt:
+        existing_system = request.system
+        if existing_system is None:
+            update["system"] = identity_prompt
+        elif isinstance(existing_system, str):
+            update["system"] = identity_prompt + "\n\n" + existing_system
+        # list-form system left untouched — caller already structured it.
+    return request.model_copy(update=update)
 
 
 def _clone_messages(messages: list[Any]) -> list[Any]:

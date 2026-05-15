@@ -154,24 +154,30 @@ def _sanitize_env(
 ) -> dict[str, str]:
     """Build a sanitised subprocess env.
 
-    Drops well-known credential vars, then keeps only entries matching
-    ``SAFE_ENV_PREFIXES`` plus any keys explicitly named in
-    ``extra_allowlist``. The denylist (sensitive name fragments) takes
-    precedence over the extra allowlist, so a user cannot accidentally pass
-    through ``MY_API_KEY`` by adding it to the allowlist.
+    Three-tier policy:
+
+    1. Hard block: ``SENSITIVE_ENV_KEYS`` (SSH sockets etc.) are always
+       stripped regardless of allowlist.
+    2. Explicit allowlist: names in ``extra_allowlist`` are passed through —
+       this is the user's escape hatch for cloud CLIs (``GITHUB_TOKEN``,
+       ``VERCEL_TOKEN``, ``SUPABASE_*``) that *would* otherwise match the
+       credential-name denylist.
+    3. Default rules: drop ``AWS_``/``GCP_``/``AZURE_``/``GH_``/``GITHUB_``
+       prefixes and ``TOKEN``/``SECRET``/``API_KEY``/``AUTH``/... fragments,
+       then keep anything matching ``SAFE_ENV_PREFIXES``.
     """
     extras = {entry for entry in extra_allowlist if entry}
     cleaned: dict[str, str] = {}
     for key, value in env.items():
-        upper = key.upper()
         if key in SENSITIVE_ENV_KEYS:
-            continue
-        if upper.startswith(("AWS_", "GCP_", "AZURE_", "GH_", "GITHUB_")):
-            continue
-        if any(fragment in upper for fragment in SENSITIVE_ENV_NAME_FRAGMENTS):
             continue
         if key in extras:
             cleaned[key] = value
+            continue
+        upper = key.upper()
+        if upper.startswith(("AWS_", "GCP_", "AZURE_", "GH_", "GITHUB_")):
+            continue
+        if any(fragment in upper for fragment in SENSITIVE_ENV_NAME_FRAGMENTS):
             continue
         if any(key == prefix or key.startswith(prefix) for prefix in SAFE_ENV_PREFIXES):
             cleaned[key] = value

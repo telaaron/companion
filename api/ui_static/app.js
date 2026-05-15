@@ -135,17 +135,27 @@
         const name = m[2];
         const args = m[3];
         const body = [];
+        let inBody = false;
         i += 1;
         while (i < lines.length) {
           const next = lines[i];
-          if (/^\s*[└⎿]/.test(next)) {
+          // First body line starts with the └ / ⎿ marker.
+          if (!inBody && /^\s*[└⎿]/.test(next)) {
             body.push(next.replace(/^\s*[└⎿]\s?/, ""));
+            inBody = true;
             i += 1;
             continue;
           }
-          if (next.trim() === "" && body.length > 0) {
+          if (inBody) {
+            // Stop on a new tool header line or a blank line.
+            if (/^[●✗⏺]\s+\w+\(/.test(next)) break;
+            if (next.trim() === "") {
+              i += 1;
+              break;
+            }
+            body.push(next);
             i += 1;
-            break;
+            continue;
           }
           break;
         }
@@ -1096,8 +1106,16 @@
         }
       }
       const data = dataParts.join("");
-      if (eventType === "sse" || eventType === "") {
-        // raw upstream SSE chunk — re-wrap to feed our existing parser
+      // Upstream SSE chunks carry their own ``event: content_block_delta``
+      // etc. lines — anything that isn't a lifecycle marker we forward to
+      // the Anthropic-SSE parser. Without this, every upstream event got
+      // dropped because eventType was never "sse".
+      const lifecycleEvents = new Set([
+        "job_started",
+        "job_finished",
+        "job_error",
+      ]);
+      if (!lifecycleEvents.has(eventType)) {
         handleSseEvent(rawBlock, assistant);
         renderBody();
         return;

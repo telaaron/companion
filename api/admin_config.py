@@ -102,6 +102,11 @@ SECTIONS: tuple[ConfigSectionSpec, ...] = (
         "Local Anthropic web_search and web_fetch behavior.",
     ),
     ConfigSectionSpec(
+        "agent_loop",
+        "Agent Loop",
+        "Server-side multi-turn loop with local Read/Write/Edit/Bash/Glob/Grep/LS tools (Phase B).",
+    ),
+    ConfigSectionSpec(
         "diagnostics",
         "Diagnostics",
         "Logging and debugging flags.",
@@ -616,6 +621,82 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
         "boolean",
         settings_attr="web_fetch_allow_private_networks",
         default="false",
+    ),
+    ConfigFieldSpec(
+        "AGENT_MODE_ENABLED",
+        "Enable Agent Mode",
+        "agent_loop",
+        "boolean",
+        settings_attr="agent_mode_enabled",
+        default="false",
+        description=(
+            "Route requests with no client-supplied tools through the proxy-side "
+            "agent loop. Tool execution happens server-side inside the workspace."
+        ),
+    ),
+    ConfigFieldSpec(
+        "AGENT_MAX_TURNS",
+        "Max Turns",
+        "agent_loop",
+        "number",
+        settings_attr="agent_max_turns",
+        default="10",
+        description="Hard cap on upstream turns per agent-loop request.",
+    ),
+    ConfigFieldSpec(
+        "AGENT_DEFAULT_WORKSPACE",
+        "Default Workspace",
+        "agent_loop",
+        settings_attr="agent_default_workspace",
+        default="",
+        description=(
+            "Sandbox root for tool executors. Empty falls back to the proxy's "
+            "current working directory. Per-request overrides take precedence."
+        ),
+    ),
+    ConfigFieldSpec(
+        "AGENT_BASH_DENYLIST",
+        "Bash Denylist",
+        "agent_loop",
+        settings_attr="agent_bash_denylist",
+        default="",
+        description=(
+            "Comma-separated tokens or substrings rejected by the Bash tool "
+            "(e.g. 'rm,sudo,curl|sh')."
+        ),
+    ),
+    ConfigFieldSpec(
+        "AGENT_TOOL_CALL_LIMIT_PER_MIN",
+        "Tool-Call Rate Limit (per request, per minute)",
+        "agent_loop",
+        "number",
+        settings_attr="agent_tool_call_limit_per_minute",
+        default="60",
+        description=("Sliding-window cap on tool calls per agent request. 0 disables."),
+    ),
+    ConfigFieldSpec(
+        "AGENT_GLOBAL_TOOL_CALL_LIMIT_PER_MIN",
+        "Tool-Call Rate Limit (process-wide, per minute)",
+        "agent_loop",
+        "number",
+        settings_attr="agent_global_tool_call_limit_per_minute",
+        default="0",
+        description=(
+            "Sliding-window cap on tool calls across all concurrent requests. "
+            "0 disables."
+        ),
+    ),
+    ConfigFieldSpec(
+        "AGENT_BASH_EXTRA_ENV",
+        "Bash Extra Env Allowlist",
+        "agent_loop",
+        settings_attr="agent_bash_extra_env",
+        default="",
+        description=(
+            "Comma-separated env vars passed through to Bash in addition to "
+            "the safe defaults. Credential-named vars (TOKEN/SECRET/etc.) "
+            "remain blocked."
+        ),
     ),
     ConfigFieldSpec(
         "DEBUG_PLATFORM_EDITS",

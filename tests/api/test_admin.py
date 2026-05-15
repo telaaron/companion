@@ -65,6 +65,31 @@ def test_admin_config_masks_secrets_and_exposes_manifest(monkeypatch, tmp_path):
     assert auth_field["source"] == "template"
 
 
+def test_admin_config_exposes_agent_loop_section_and_fields(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_app(lifespan_enabled=False)
+
+    response = _local_client(app).get("/admin/api/config")
+    assert response.status_code == 200
+    body = response.json()
+
+    section_ids = {section["id"] for section in body["sections"]}
+    assert "agent_loop" in section_ids
+
+    keys = {field["key"]: field for field in body["fields"]}
+    for expected in (
+        "AGENT_MODE_ENABLED",
+        "AGENT_MAX_TURNS",
+        "AGENT_DEFAULT_WORKSPACE",
+        "AGENT_BASH_DENYLIST",
+    ):
+        assert expected in keys, expected
+        assert keys[expected]["section"] == "agent_loop"
+    assert keys["AGENT_MODE_ENABLED"]["type"] == "boolean"
+    assert keys["AGENT_MAX_TURNS"]["type"] == "number"
+
+
 def test_admin_validate_rejects_bad_model_shape(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     _clear_process_config(monkeypatch)

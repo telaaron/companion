@@ -18,6 +18,9 @@ from core.trace import api_messages_request_snapshot, trace_event, traced_async_
 from providers.base import BaseProvider
 from providers.exceptions import InvalidRequestError, ProviderError
 
+from .agent.agent_loop_streaming import run_agent_streaming
+from .agent.global_rate_limit import configure as configure_global_tool_limiter
+from .agent.workspace_resolver import parse_bash_denylist, resolve_workspace
 from .model_router import ModelRouter
 from .models.anthropic import MessagesRequest, TokenCountRequest
 from .models.responses import TokenCountResponse
@@ -98,6 +101,16 @@ class ClaudeProxyService:
         self._provider_getter = provider_getter
         self._model_router = model_router or ModelRouter(settings)
         self._token_counter = token_counter
+
+    def _should_use_agent_loop(self, request: MessagesRequest) -> bool:
+        """Engage the proxy-side agent loop only when explicitly enabled.
+
+        Conditions: settings opt-in AND no client-supplied tools (otherwise the
+        client owns its own tool-execution lifecycle and we must pass through).
+        """
+        if not self._settings.agent_mode_enabled:
+            return False
+        return not request.tools
 
     def create_message(self, request_data: MessagesRequest) -> object:
         """Create a message response or streaming response."""
@@ -181,6 +194,51 @@ class ClaudeProxyService:
                         "FULL_PAYLOAD [{}]: {}", request_id, routed.request.model_dump()
                     )
 
+                if self._should_use_agent_loop(routed.request):
+                    workspace = resolve_workspace(routed.request, self._settings)
+                    denylist = parse_bash_denylist(self._settings.agent_bash_denylist)
+                    extra_env = parse_bash_denylist(self._settings.agent_bash_extra_env)
+                    global_limiter = configure_global_tool_limiter(
+                        self._settings.agent_global_tool_call_limit_per_minute
+                    )
+                    trace_event(
+                        stage="egress",
+                        event="api.agent_loop.engaged",
+                        source="api",
+                        request_id=request_id,
+                        workspace=str(workspace.root),
+                        max_turns=self._settings.agent_max_turns,
+                    )
+                    agent_stream = run_agent_streaming(
+                        routed.request,
+                        provider,
+                        workspace,
+                        max_turns=self._settings.agent_max_turns,
+                        request_id=request_id,
+                        bash_denylist=denylist,
+                        bash_extra_env_allowlist=extra_env,
+                        tool_call_limit_per_minute=self._settings.agent_tool_call_limit_per_minute,
+                        global_limiter=global_limiter,
+                    )
+                    return anthropic_sse_streaming_response(
+                        traced_async_stream(
+                            agent_stream,
+                            stage="egress",
+                            source="api",
+                            complete_event="api.agent_loop.stream_completed",
+                            interrupted_event="api.agent_loop.stream_interrupted",
+                            chunk_event=None,
+                            extra={
+                                "request_id": request_id,
+                                "provider_id": routed.resolved.provider_id,
+                                "gateway_model": routed.request.model,
+                                "agent_mode": True,
+                            },
+                        )
+                    )
+
+                # Token-counting only matters for the upstream-passthrough path,
+                # where the provider needs the count for its own usage accounting.
                 input_tokens = self._token_counter(
                     routed.request.messages,
                     routed.request.system,

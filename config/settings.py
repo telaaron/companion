@@ -238,6 +238,37 @@ class Settings(BaseSettings):
         default=False, validation_alias="WEB_FETCH_ALLOW_PRIVATE_NETWORKS"
     )
 
+    # ==================== Server-side agent loop (Phase B) ====================
+    # When true, requests with no client-supplied tools are routed through the
+    # multi-turn agent loop, which injects local tool definitions (Read/Write/
+    # Edit/LS/Glob/Grep/Bash) and executes tool_use blocks server-side.
+    agent_mode_enabled: bool = Field(
+        default=False, validation_alias="AGENT_MODE_ENABLED"
+    )
+    agent_max_turns: int = Field(default=10, validation_alias="AGENT_MAX_TURNS")
+    # Workspace root used by tool executors when no per-session override is set.
+    # Empty string ⇒ fall back to the proxy CWD.
+    agent_default_workspace: str = Field(
+        default="", validation_alias="AGENT_DEFAULT_WORKSPACE"
+    )
+    # Comma-separated denylist of substrings/tokens for the Bash tool.
+    agent_bash_denylist: str = Field(default="", validation_alias="AGENT_BASH_DENYLIST")
+    # Per-request sliding-window cap on tool calls. ``0`` disables the limiter.
+    agent_tool_call_limit_per_minute: int = Field(
+        default=60, validation_alias="AGENT_TOOL_CALL_LIMIT_PER_MIN"
+    )
+    # Process-wide tool-call cap shared across all concurrent agent requests.
+    # ``0`` disables. Independent from the per-request limit.
+    agent_global_tool_call_limit_per_minute: int = Field(
+        default=0, validation_alias="AGENT_GLOBAL_TOOL_CALL_LIMIT_PER_MIN"
+    )
+    # Comma-separated env-var names to pass through to Bash subprocesses in
+    # addition to the built-in safe prefixes. Names matching the credential
+    # denylist (TOKEN/SECRET/etc.) are still stripped.
+    agent_bash_extra_env: str = Field(
+        default="", validation_alias="AGENT_BASH_EXTRA_ENV"
+    )
+
     # ==================== Debug / diagnostic logging (avoid sensitive content) ====================
     # When false (default), API and SSE helpers log only metadata (counts, lengths, ids).
     log_raw_api_payloads: bool = Field(

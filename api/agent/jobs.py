@@ -86,6 +86,29 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
         if not job:
             raise RuntimeError(f"job {job_id} vanished after creation")
         payload = json.loads(job["request_json"])
+
+        # Inject project shared_context as the system prompt when the job is
+        # scoped to a project. This is what makes the project's brief actually
+        # reach the model — the UI used to send it as nothing.
+        project_id = job.get("project_id") or (payload.get("metadata") or {}).get(
+            "project_id"
+        )
+        if project_id:
+            project = datastore.get_project(project_id)
+            if project:
+                shared = (project.get("shared_context") or "").strip()
+                if shared:
+                    existing = payload.get("system")
+                    if existing is None:
+                        payload["system"] = shared
+                    elif isinstance(existing, str):
+                        payload["system"] = shared + "\n\n" + existing
+                    elif isinstance(existing, list):
+                        payload["system"] = [
+                            {"type": "text", "text": shared},
+                            *existing,
+                        ]
+
         request = _build_messages_request(payload)
 
         workspace = resolve_workspace(request, settings)

@@ -595,6 +595,46 @@ async def settings_route(
     }
 
 
+@dashboard_router.get("/v1/fs/browse")
+async def fs_browse(
+    path: str = "",
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """List sub-directories of ``path`` for the workspace picker.
+
+    Returns the canonical absolute path + a list of child directories. ``path``
+    may be empty (defaults to ``$HOME``) or ``~`` for the home dir. Hidden
+    folders (starting with ``.``) are filtered out by default. Used by the
+    Project editor's workspace dropdown.
+    """
+    try:
+        if not path:
+            base = Path.home()
+        else:
+            base = Path(path).expanduser().resolve(strict=False)
+    except OSError as exc:
+        raise HTTPException(400, f"invalid path: {exc}") from exc
+    if not base.exists() or not base.is_dir():
+        raise HTTPException(404, f"not a directory: {base}")
+
+    children: list[dict[str, Any]] = []
+    try:
+        for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+            if entry.name.startswith("."):
+                continue
+            if not entry.is_dir():
+                continue
+            children.append({"name": entry.name, "path": str(entry)})
+    except PermissionError as exc:
+        raise HTTPException(403, f"permission denied: {exc}") from exc
+
+    return {
+        "path": str(base),
+        "parent": str(base.parent) if base != base.parent else None,
+        "children": children,
+    }
+
+
 @dashboard_router.get("/v1/capabilities")
 async def capabilities_route(
     settings: Settings = Depends(get_settings), _auth=Depends(require_api_key)

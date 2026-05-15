@@ -1221,3 +1221,141 @@ hr {
     transform: translateY(0);
   }
 }
+
+/* ============================================================ Folder picker */
+
+.folder-list {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-input);
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.folder-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  font-size: var(--fs-13);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  transition: background 100ms ease;
+}
+
+.folder-item:last-child {
+  border-bottom: 0;
+}
+
+.folder-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.folder-icon {
+  color: var(--fg-muted);
+  width: 16px;
+  text-align: center;
+}
+
+/* ============================================================ Chat title polish */
+
+.chat-title {
+  cursor: text;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  transition: border-color 120ms ease;
+}
+
+.chat-title:hover {
+  border-color: var(--border);
+}
+
+.chat-title:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-input);
+}
+
+.chat-title:empty::before {
+  content: attr(data-placeholder);
+  color: var(--fg-faint);
+}
+
+/* ============================================================ Smart-scroll affordance */
+
+.scroll-to-bottom {
+  position: absolute;
+  bottom: 90px;
+  right: 24px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: 0;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  display: none;
+}
+
+.scroll-to-bottom.visible {
+  display: block;
+}
+
+/* ============================================================ Tool blocks */
+
+.tool-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+.tool-glyph {
+  color: var(--accent);
+  margin-right: 6px;
+}
+
+.tool-name {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.tool-args {
+  color: var(--fg-muted);
+}
+
+.tool-body {
+  margin-top: 4px;
+}
+
+.tool-body summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: var(--fs-11);
+  user-select: none;
+}
+
+.tool-body summary:hover {
+  color: var(--accent);
+}
+
+.tool-body pre {
+  margin: 6px 0 0 0;
+  padding: var(--sp-2);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--r-sm);
+  max-height: 320px;
+  overflow: auto;
+  font-size: var(--fs-12);
+  white-space: pre-wrap;
+  word-break: break-all;
+}

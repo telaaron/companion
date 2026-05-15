@@ -123,8 +123,47 @@
       ? url
       : "#";
   }
+  function renderToolBlocks(text) {
+    const lines = text.split("\n");
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const m = line.match(/^([●✗⏺])\s+(\w+)\(([^)]*)\)\s*$/);
+      if (m) {
+        const icon = m[1];
+        const name = m[2];
+        const args = m[3];
+        const body = [];
+        i += 1;
+        while (i < lines.length) {
+          const next = lines[i];
+          if (/^\s*[└⎿]/.test(next)) {
+            body.push(next.replace(/^\s*[└⎿]\s?/, ""));
+            i += 1;
+            continue;
+          }
+          if (next.trim() === "" && body.length > 0) {
+            i += 1;
+            break;
+          }
+          break;
+        }
+        const payload = encodeURIComponent(
+          JSON.stringify({ icon, name, args, body: body.join("\n") })
+        );
+        out.push(`§§TOOL§§${payload}§§/TOOL§§`);
+        continue;
+      }
+      out.push(line);
+      i += 1;
+    }
+    return out.join("\n");
+  }
+
   function md(text) {
     if (!text) return "";
+    text = renderToolBlocks(text);
     const blocks = [];
     let s = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, l, b) => {
       blocks.push({ l, b });
@@ -141,6 +180,21 @@
       (_m, t, u) =>
         `<a href="${safeUrl(u)}" target="_blank" rel="noopener noreferrer">${t}</a>`
     );
+    s = s.replace(/§§TOOL§§(.+?)§§\/TOOL§§/gs, (_m, payload) => {
+      try {
+        const o = JSON.parse(decodeURIComponent(payload));
+        const header =
+          `<span class="tool-glyph">${escapeHtml(o.icon || "●")}</span>` +
+          `<span class="tool-name">${escapeHtml(o.name || "")}</span>` +
+          `<span class="tool-args">(${escapeHtml(o.args || "")})</span>`;
+        const body = o.body
+          ? `<details class="tool-body"><summary>show output</summary><pre>${escapeHtml(o.body)}</pre></details>`
+          : "";
+        return `<div class="tool-block">${header}${body}</div>`;
+      } catch {
+        return "";
+      }
+    });
     s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
     s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
     s = s.replace(/(^|[\s>])_([^_\n]+)_/g, "$1<em>$2</em>");
@@ -196,6 +250,139 @@
   const chatState = {};
   let activeSessionId = null;
 
+  // Folder picker — modal directory browser backed by /v1/fs/browse.
+  function openFolderPicker(initialPath, onChoose) {
+    const overlay = el("div", { class: "modal-overlay" });
+    const card = el("div", { class: "modal-card", style: "max-width:640px;" });
+    overlay.appendChild(card);
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) document.body.removeChild(overlay);
+    });
+    document.body.appendChild(overlay);
+
+    let currentPath = initialPath || "";
+    const breadcrumb = el("div", { class: "muted fs-12", style: "margin-bottom:8px;" });
+    const list = el("div", { class: "folder-list" });
+    const pathInput = el("input", { class: "form-input", value: currentPath });
+    const close = () => document.body.removeChild(overlay);
+
+    async function load(path) {
+      currentPath = path;
+      pathInput.value = path;
+      breadcrumb.textContent = `Browsing: ${path || "(home)"}`;
+      list.innerHTML = "Loading…";
+      try {
+        const data = await api(`/v1/fs/browse?path=${encodeURIComponent(path)}`);
+        currentPath = data.path;
+        pathInput.value = data.path;
+        breadcrumb.textContent = `Browsing: ${data.path}`;
+        list.innerHTML = "";
+        if (data.parent) {
+          list.appendChild(
+            el(
+              "div",
+              {
+                class: "folder-item",
+                onclick: () => load(data.parent),
+              },
+              el("span", { class: "folder-icon" }, "↰"),
+              el("span", {}, "..")
+            )
+          );
+        }
+        (data.children || []).forEach((c) => {
+          list.appendChild(
+            el(
+              "div",
+              {
+                class: "folder-item",
+                onclick: () => load(c.path),
+              },
+              el("span", { class: "folder-icon" }, "▸"),
+              el("span", {}, c.name)
+            )
+          );
+        });
+        if ((data.children || []).length === 0) {
+          list.appendChild(
+            el("div", { class: "muted fs-12", style: "padding:8px;" }, "(no sub-folders)")
+          );
+        }
+      } catch (e) {
+        list.innerHTML = "";
+        list.appendChild(
+          el("div", { class: "muted fs-12", style: "color:var(--error);padding:8px;" }, `Error: ${e.message}`)
+        );
+      }
+    }
+
+    card.appendChild(el("h2", {}, "Pick a folder"));
+    card.appendChild(breadcrumb);
+    card.appendChild(
+      el(
+        "div",
+        { class: "row gap-2 align-center", style: "margin-bottom:8px;" },
+        pathInput,
+        el(
+          "button",
+          {
+            class: "btn btn-ghost btn-sm",
+            type: "button",
+            onclick: () => load(pathInput.value || ""),
+          },
+          "Go"
+        )
+      )
+    );
+    pathInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        load(pathInput.value || "");
+      }
+    });
+    card.appendChild(list);
+    card.appendChild(
+      el(
+        "div",
+        { class: "row gap-2 align-center", style: "margin-top:12px; justify-content:flex-end;" },
+        el(
+          "button",
+          { class: "btn btn-ghost", type: "button", onclick: close },
+          "Cancel"
+        ),
+        el(
+          "button",
+          {
+            class: "btn btn-primary",
+            type: "button",
+            onclick: () => {
+              onChoose(currentPath);
+              close();
+            },
+          },
+          "Use this folder"
+        )
+      )
+    );
+
+    load(currentPath);
+  }
+
+  function deriveSessionTitle(text) {
+    const cleaned = (text || "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .replace(/^[#>\-*\s]+/, "");
+    if (!cleaned) return "untitled";
+    // Cut at first sentence boundary or word boundary near 60 chars.
+    const sentenceCut = cleaned.split(/[.!?\n]/, 1)[0].trim();
+    const candidate = sentenceCut || cleaned;
+    if (candidate.length <= 60) return candidate;
+    const words = candidate.slice(0, 60).split(" ");
+    if (words.length > 1) words.pop(); // drop the half-word
+    return words.join(" ") + "…";
+  }
+
   async function loadSessions() {
     return (await api("/v1/sessions")).sessions || [];
   }
@@ -233,7 +420,7 @@
     view.appendChild(
       pageHeader({
         title: "Chat",
-        sub: "deepseek-routed conversations · streaming",
+        sub: "Multi-provider conversations · streaming",
       })
     );
     const shell = el("div", { class: "chat-shell" });
@@ -280,7 +467,7 @@
           el(
             "div",
             { class: "empty-sub" },
-            "Hit ‘+ new’ to start one. Sessions are stored locally and visible to ds."
+            "Hit ‘+ new’ to start one. Sessions are stored locally and visible to Companion."
           )
         )
       );
@@ -332,7 +519,7 @@
           el(
             "div",
             { class: "empty-sub" },
-            "ds runs your DeepSeek proxy; this UI is the dashboard for it."
+            "Companion is your multi-provider AI; this UI is the dashboard for it."
           )
         )
       );
@@ -351,16 +538,35 @@
     const topbar = el("div", { class: "chat-topbar" });
     const title = el(
       "div",
-      { class: "chat-title", contenteditable: "true", spellcheck: "false" },
+      {
+        class: "chat-title",
+        contenteditable: "true",
+        spellcheck: "false",
+        title: "Click to rename — press Enter or click away to save",
+        "data-placeholder": "untitled",
+      },
       session.title || "untitled"
     );
-    title.addEventListener("blur", async () => {
+    const persistTitle = async () => {
       const t = (title.textContent || "").trim().slice(0, 200) || "untitled";
+      session.title = t;
       await updateSession(session.id, {
         title: t,
         model: session.model || "",
         project_id: session.project_id || null,
       });
+      void loadSessions();
+    };
+    title.addEventListener("blur", persistTitle);
+    title.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        title.blur();
+      }
+      if (e.key === "Escape") {
+        title.textContent = session.title || "untitled";
+        title.blur();
+      }
     });
 
     // Project select
@@ -466,7 +672,7 @@
         (() => {
           const ta = el("textarea", {
             id: "chat-input",
-            placeholder: "message ds…",
+            placeholder: "Ask anything…",
             rows: 1,
           });
           ta.addEventListener("keydown", (e) => {
@@ -521,7 +727,7 @@
         el(
           "span",
           { class: "message-role" },
-          msg.role === "user" ? "you" : "ds"
+          msg.role === "user" ? "you" : "Companion"
         ),
         msg.created_at ? el("span", {}, fmtTime(msg.created_at)) : null
       ),
@@ -549,6 +755,28 @@
     // Persist user msg.
     const userRow = await appendMessage(session.id, "user", text);
     messagesHost.appendChild(renderChatMessage(userRow));
+
+    // Auto-name the session from the first user message if still untitled.
+    const isUntitled =
+      !session.title ||
+      session.title === "untitled" ||
+      session.title.trim() === "";
+    if (isUntitled) {
+      const derived = deriveSessionTitle(text);
+      session.title = derived;
+      try {
+        await updateSession(session.id, {
+          title: derived,
+          model: session.model || "",
+          project_id: session.project_id || null,
+        });
+        const titleEl = document.querySelector(".chat-title");
+        if (titleEl) titleEl.textContent = derived;
+        void loadSessions();
+      } catch (e) {
+        console.warn("auto-name failed", e);
+      }
+    }
 
     const fresh = await loadSessionDetail(session.id);
     const messages = (fresh.messages || []).map((m) => ({
@@ -597,10 +825,32 @@
     let lastSeq = -1;
     let ctrl = new AbortController();
 
+    // Smart auto-scroll: stick to the bottom unless the user manually
+    // scrolled up. Detect "manually scrolled" by tracking distance-from-bottom
+    // on the user's scroll events; programmatic scrollTop assignments don't
+    // change this flag mid-flight.
+    let stickToBottom = true;
+    const BOTTOM_THRESHOLD = 80; // px
+    const isNearBottom = () =>
+      messagesHost.scrollHeight - messagesHost.scrollTop - messagesHost.clientHeight
+        < BOTTOM_THRESHOLD;
+    let lastUserScrollAt = 0;
+    messagesHost.addEventListener("scroll", () => {
+      lastUserScrollAt = Date.now();
+      stickToBottom = isNearBottom();
+    });
+
     const renderBody = () => {
       const body = node.querySelector(".message-body");
       if (body) body.innerHTML = md(assistant.content);
-      messagesHost.scrollTop = messagesHost.scrollHeight;
+      // Only auto-scroll when the user has been at-bottom recently. If they
+      // scrolled up to read earlier content, stay put.
+      if (stickToBottom) {
+        messagesHost.scrollTop = messagesHost.scrollHeight;
+      } else if (Date.now() - lastUserScrollAt > 60_000) {
+        // 1 minute of no scroll interaction — assume idle and snap back.
+        messagesHost.scrollTop = messagesHost.scrollHeight;
+      }
     };
 
     const consumeChunk = (rawBlock) => {
@@ -863,6 +1113,19 @@
       value: existing?.workspace_path || "",
       placeholder: "/Users/you/projects/nureine",
     });
+    const wsBrowseBtn = el(
+      "button",
+      {
+        type: "button",
+        class: "btn btn-ghost btn-sm",
+        onclick: () => openFolderPicker(wsIn.value || "", (chosen) => {
+          wsIn.value = chosen;
+        }),
+      },
+      "Browse…"
+    );
+    const wsRow = el("div", { class: "row gap-2 align-center", style: { width: "100%" } }, wsIn, wsBrowseBtn);
+    wsIn.style.flex = "1";
 
     card.append(
       el(
@@ -887,7 +1150,7 @@
         "div",
         { class: "field" },
         el("label", { class: "field-label" }, "Workspace path"),
-        wsIn,
+        wsRow,
         el(
           "div",
           { class: "field-help" },
@@ -902,7 +1165,7 @@
         el(
           "div",
           { class: "field-help" },
-          "Visible to ds for every session attached to this project."
+          "Visible to Companion for every session attached to this project."
         )
       ),
       el(
@@ -1364,7 +1627,7 @@
           "div",
           { class: "field-help", style: { marginTop: "12px" } },
           "Restart the proxy after edits to apply changes (",
-          el("code", {}, "pkill -f free-claude-code && ds"),
+          el("code", {}, "pkill -f free-claude-code && uv run fcc-server"),
           ")."
         )
       )
@@ -1948,7 +2211,38 @@
           ),
           el("p", { class: "muted fs-12" }, item.summary || "")
         );
-        if (item.cta_field) {
+        if (item.cta_action && Object.keys(item.cta_action).length) {
+          // One-click activation: hit /v1/env for each key/value, then re-render.
+          card.appendChild(
+            el(
+              "button",
+              {
+                class: "btn btn-primary btn-sm",
+                type: "button",
+                onclick: async (e) => {
+                  const btn = e.currentTarget;
+                  btn.disabled = true;
+                  btn.textContent = "Working…";
+                  try {
+                    for (const [k, v] of Object.entries(item.cta_action)) {
+                      await api("/v1/env", {
+                        method: "PUT",
+                        body: JSON.stringify({ key: k, value: String(v) }),
+                      });
+                    }
+                    toastShow(`${item.title} — enabled`, "ok");
+                    renderSettings();
+                  } catch (err) {
+                    toastShow(`Failed: ${err.message}`, "error");
+                    btn.disabled = false;
+                    btn.textContent = item.cta_label || "Enable";
+                  }
+                },
+              },
+              item.cta_label || "Enable"
+            )
+          );
+        } else if (item.cta_field) {
           card.appendChild(
             el(
               "button",

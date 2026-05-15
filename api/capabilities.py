@@ -32,6 +32,9 @@ class Capability:
     summary: str
     cta_label: str
     cta_field: str | None = None  # admin-form field key the CTA scrolls to
+    # If set, the UI can one-click activate this capability by PUT /v1/env
+    # with these key/value pairs. ``None`` ⇒ no direct action, deep-link only.
+    cta_action: dict[str, str] | None = None
 
 
 def scan(settings: Settings) -> list[Capability]:
@@ -135,6 +138,7 @@ def _agent_capabilities(settings: Settings) -> list[Capability]:
                 ),
                 cta_label="Enable",
                 cta_field="AGENT_MODE_ENABLED",
+                cta_action={"AGENT_MODE_ENABLED": "true"},
             )
         )
 
@@ -200,6 +204,7 @@ def _integration_capabilities(settings: Settings) -> list[Capability]:
                 ),
                 cta_label="Enable",
                 cta_field="ENABLE_WEB_SERVER_TOOLS",
+                cta_action={"ENABLE_WEB_SERVER_TOOLS": "true"},
             )
         )
 

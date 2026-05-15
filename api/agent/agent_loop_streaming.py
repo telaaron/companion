@@ -233,7 +233,10 @@ def _format_tool_block_text(invocation: ToolInvocation) -> str:
     label = _summarise_input(invocation.name, invocation.input)
     icon = "✗" if invocation.result.is_error else "⏺"
     snippet = _truncate(_result_text(invocation.result), _TOOL_RESULT_PREVIEW_CHARS)
-    return f"\n{icon} {label}\n  ⎿ {snippet}\n"
+    # Trailing ``\n\n`` is the boundary the chat-side ``renderToolBlocks``
+    # parser uses to know the body ended — without it the model's next text
+    # reply leaks INTO the tool-result block.
+    return f"\n{icon} {label}\n  ⎿ {snippet}\n\n"
 
 
 def _summarise_input(tool_name: str, input_data: dict[str, Any]) -> str:

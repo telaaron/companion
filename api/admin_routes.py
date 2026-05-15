@@ -25,6 +25,8 @@ from .admin_config import (
     write_managed_env,
 )
 from .admin_urls import local_admin_url
+from .capabilities import scan as scan_capabilities
+from .capabilities import to_payload as capabilities_to_payload
 
 router = APIRouter()
 
@@ -89,9 +91,24 @@ async def admin_page(request: Request):
 @router.get("/admin/assets/{filename}", include_in_schema=False)
 async def admin_asset(filename: str, request: Request):
     require_loopback_admin(request)
-    if filename not in {"admin.css", "admin.js"}:
+    if filename not in {"admin.css", "admin.js", "wizard.html", "wizard.js"}:
         raise HTTPException(status_code=404, detail="Admin asset not found")
     return _asset_response(filename)
+
+
+@router.get("/admin/onboarding", include_in_schema=False)
+async def admin_onboarding(request: Request):
+    """Step-by-step setup wizard for first-time configuration."""
+    require_loopback_admin(request)
+    return _asset_response("wizard.html")
+
+
+@router.get("/admin/api/capabilities")
+async def admin_capabilities(request: Request):
+    """Return the current capability snapshot grouped by status."""
+    require_loopback_admin(request)
+    settings = get_cached_settings()
+    return capabilities_to_payload(scan_capabilities(settings))
 
 
 @router.get("/admin/api/config")

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Free Claude Code · Setup</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/admin/assets/admin.css" />
+    <style>
+      .wizard-shell {
+        max-width: 720px;
+        margin: 4rem auto;
+        padding: 0 1.5rem;
+      }
+      .wizard-card {
+        background: var(--surface, #181a20);
+        border: 1px solid var(--border, #2a2d36);
+        border-radius: 14px;
+        padding: 2rem 2.25rem;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+      }
+      .wizard-stepper {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+        font-size: 0.78rem;
+        color: var(--muted, #7d8597);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .wizard-stepper .step {
+        flex: 1;
+        padding: 0.4rem 0.6rem;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.03);
+        text-align: center;
+      }
+      .wizard-stepper .step.current {
+        background: var(--accent, #6c7cff);
+        color: white;
+      }
+      .wizard-stepper .step.done {
+        background: rgba(108, 124, 255, 0.18);
+        color: var(--accent, #6c7cff);
+      }
+      .wizard-card h2 {
+        font-size: 1.4rem;
+        margin: 0 0 0.6rem 0;
+      }
+      .wizard-card p.lead {
+        margin: 0 0 1.4rem 0;
+        color: var(--muted, #9aa0b3);
+        line-height: 1.55;
+      }
+      .wizard-card label {
+        display: block;
+        font-size: 0.85rem;
+        font-weight: 500;
+        margin: 1rem 0 0.4rem 0;
+        color: var(--text, #d4d6e0);
+      }
+      .wizard-card input,
+      .wizard-card select {
+        width: 100%;
+        padding: 0.7rem 0.9rem;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border, #2a2d36);
+        border-radius: 8px;
+        color: inherit;
+        font-size: 0.95rem;
+        font-family: inherit;
+      }
+      .wizard-card .field-hint {
+        margin-top: 0.4rem;
+        font-size: 0.78rem;
+        color: var(--muted, #7d8597);
+      }
+      .wizard-actions {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 2rem;
+        gap: 1rem;
+      }
+      .wizard-actions button {
+        padding: 0.7rem 1.4rem;
+        border-radius: 8px;
+        border: 1px solid var(--border, #2a2d36);
+        background: rgba(255, 255, 255, 0.04);
+        color: inherit;
+        font-size: 0.9rem;
+        cursor: pointer;
+      }
+      .wizard-actions button.primary {
+        background: var(--accent, #6c7cff);
+        border-color: var(--accent, #6c7cff);
+        color: white;
+        font-weight: 500;
+      }
+      .wizard-actions button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .wizard-toggle {
+        display: flex;
+        gap: 0.6rem;
+        align-items: center;
+        margin: 1.2rem 0;
+        padding: 0.9rem 1rem;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        border: 1px solid var(--border, #2a2d36);
+      }
+      .wizard-toggle input[type="checkbox"] {
+        width: auto;
+        margin: 0;
+      }
+      .wizard-toggle div {
+        flex: 1;
+      }
+      .wizard-toggle strong {
+        display: block;
+        font-size: 0.92rem;
+        margin-bottom: 0.2rem;
+      }
+      .wizard-toggle span {
+        font-size: 0.78rem;
+        color: var(--muted, #7d8597);
+      }
+      .wizard-status {
+        margin-top: 1rem;
+        font-size: 0.85rem;
+        color: var(--muted, #9aa0b3);
+        min-height: 1.2rem;
+      }
+      .wizard-status.error {
+        color: #ff6b80;
+      }
+      .wizard-status.ok {
+        color: #43d39e;
+      }
+      .wizard-summary {
+        background: rgba(108, 124, 255, 0.08);
+        border: 1px solid rgba(108, 124, 255, 0.3);
+        border-radius: 8px;
+        padding: 1rem 1.2rem;
+        margin: 1rem 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.82rem;
+        line-height: 1.7;
+      }
+      .wizard-summary kbd {
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 0.78rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wizard-shell">
+      <div class="wizard-card">
+        <div class="wizard-stepper" id="stepper"></div>
+        <div id="stepBody"></div>
+        <div class="wizard-status" id="status"></div>
+        <div class="wizard-actions">
+          <button id="backButton" type="button">Back</button>
+          <div style="flex: 1"></div>
+          <button id="nextButton" type="button" class="primary">Next →</button>
+        </div>
+      </div>
+    </div>
+    <script src="/admin/assets/wizard.js"></script>
+  </body>
+</html>

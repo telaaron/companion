@@ -62,9 +62,10 @@ async function api(path, options = {}) {
 
 async function load() {
   showMessage("Loading admin config");
-  const [config, status] = await Promise.all([
+  const [config, status, capabilities] = await Promise.all([
     api("/admin/api/config"),
     api("/admin/api/status"),
+    api("/admin/api/capabilities").catch(() => null),
   ]);
   state.config = config;
   state.status = status;
@@ -72,12 +73,68 @@ async function load() {
   updateHeader(status);
   renderNav(config.sections);
   renderProviders(config.provider_status);
+  if (capabilities) renderCapabilities(capabilities);
   renderSections(config.sections, config.fields);
   byId("configPath").textContent = config.paths.managed;
   await validate(false);
   await refreshLocalStatus();
   updateDirtyState();
   showMessage("");
+}
+
+function renderCapabilities(capabilities) {
+  const grid = byId("capabilitiesGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  const groups = [
+    { id: "active", label: "Active", color: "ok" },
+    { id: "inactive", label: "Needs attention", color: "warn" },
+    { id: "suggested", label: "Suggested", color: "neutral" },
+  ];
+  let total = 0;
+  groups.forEach((group) => {
+    const items = capabilities[group.id] || [];
+    items.forEach((cap) => {
+      total += 1;
+      const card = document.createElement("article");
+      card.className = `capability-card capability-${group.id}`;
+      card.innerHTML = `
+        <header>
+          <span class="status-pill ${group.color}">${group.label}</span>
+          <strong>${escapeText(cap.title)}</strong>
+        </header>
+        <p>${escapeText(cap.summary)}</p>
+      `;
+      if (cap.cta_field) {
+        const cta = document.createElement("button");
+        cta.type = "button";
+        cta.className = "ghost-button";
+        cta.textContent = cap.cta_label || "Open";
+        cta.addEventListener("click", () => focusField(cap.cta_field));
+        card.appendChild(cta);
+      }
+      grid.appendChild(card);
+    });
+  });
+  if (total === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No capabilities reported. Configure a provider to begin.";
+    grid.appendChild(empty);
+  }
+}
+
+function escapeText(text) {
+  const div = document.createElement("div");
+  div.textContent = text || "";
+  return div.innerHTML;
+}
+
+function focusField(key) {
+  const input = document.getElementById(`field-${key}`);
+  if (!input) return;
+  input.scrollIntoView({ behavior: "smooth", block: "center" });
+  input.focus({ preventScroll: true });
 }
 
 function updateHeader(status) {

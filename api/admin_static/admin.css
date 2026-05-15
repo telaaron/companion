@@ -188,6 +188,7 @@ textarea {
   border-color: rgba(255, 116, 108, 0.36);
 }
 
+.capabilities-strip,
 .provider-strip,
 .settings-section,
 .env-panel {
@@ -197,9 +198,58 @@ textarea {
   box-shadow: var(--shadow);
 }
 
+.capabilities-strip,
 .provider-strip {
   margin-bottom: 18px;
   padding: 16px;
+}
+
+.capabilities-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.capability-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--card);
+}
+
+.capability-card header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.capability-card header strong {
+  font-size: 14px;
+}
+
+.capability-card p {
+  font-size: 13px;
+  color: var(--muted, #9aa0b3);
+  margin: 0;
+  line-height: 1.45;
+}
+
+.capability-card .ghost-button {
+  justify-self: start;
+}
+
+.capability-active {
+  border-color: rgba(67, 211, 158, 0.35);
+}
+
+.capability-inactive {
+  border-color: rgba(255, 180, 70, 0.35);
+}
+
+.capability-suggested {
+  border-color: rgba(108, 124, 255, 0.4);
 }
 
 .strip-header,

@@ -34,10 +34,69 @@ Free Claude Code routes Anthropic Messages API traffic from Claude Code to NVIDI
   </a>
 </div>
 
+## Agent Mode (NEW)
+
+Free Claude Code now ships a **server-side agent loop** — your model gets local
+filesystem and shell tools without any client-side wiring. One env flag, one
+workspace path, and any provider becomes a coding agent.
+
+```bash
+# turn it on
+echo "AGENT_MODE_ENABLED=true" >> ~/.config/free-claude-code/.env
+echo "AGENT_DEFAULT_WORKSPACE=$HOME/projects" >> ~/.config/free-claude-code/.env
+# restart proxy
+```
+
+| Tool | What it does | Sandboxed |
+|------|---|---|
+| `Read` | Read file contents (with line numbers) | ✅ workspace-only |
+| `Write` | Create / overwrite files | ✅ workspace-only |
+| `Edit` | Exact-string replacement | ✅ workspace-only |
+| `LS` | Directory listing (typed) | ✅ workspace-only |
+| `Glob` | Pattern match files | ✅ workspace-only |
+| `Grep` | Ripgrep with Python fallback | ✅ workspace-only |
+| `Bash` | Shell commands | ✅ workspace cwd, denylist, timeout, secret-named env stripped |
+
+Multi-turn loop, streaming SSE pass-through, per-request + global tool-call
+rate limits, audit trail via `trace_event`, plus XML-style tool-call promotion
+for models that emit `<invoke name="...">` instead of native blocks.
+
+### Onboarding wizard
+
+First-time setup in 4 clicks: open
+
+```
+http://127.0.0.1:8082/admin/onboarding
+```
+
+Step 1 picks your provider, step 2 sets the API key, step 3 enables agent mode
++ workspace, step 4 toggles integrations. Wizard writes through the existing
+managed-env apply endpoint — no restart needed.
+
+### Capabilities panel
+
+Open `/admin` — top of the page now shows live status cards:
+
+- ✅ **Active**: providers connected, agent mode running
+- ⚠️ **Needs attention**: workspace path missing, auth token not set
+- 💡 **Suggested**: integrations not yet configured (web tools, denylist, global rate cap, …)
+
+Each card has a CTA that scrolls + focuses the relevant config field.
+
+### Roadmap
+
+- [ ] **Plugin system** — drop a YAML in `plugins/` to register an MCP server, an Obsidian vault, an image-gen provider
+- [ ] **Skill marketplace** — install Anthropic-style skills via UI
+- [ ] **Memory / RAG** — index `AGENT_DEFAULT_WORKSPACE` and expose a `Search` tool
+- [ ] **Self-improvement loop** — `/admin/insights` from audit logs ("you ran Bash 47× today; consider tightening denylist")
+- [ ] **Notion / Obsidian connectors** — first-class vault integration
+
 ## What You Get
 
 - Drop-in proxy for Claude Code's Anthropic API calls.
 - Ten provider backends: NVIDIA NIM, Kimi, Wafer, OpenRouter, DeepSeek, LM Studio, llama.cpp, Ollama, OpenCode Zen, and Z.ai.
+- **Server-side agent loop** with seven sandboxed local tools (see [Agent Mode](#agent-mode-new)).
+- **Onboarding wizard** + live capability scanner at `/admin/onboarding` and `/admin`.
 - Per-model routing: send Opus, Sonnet, Haiku, and fallback traffic to different providers.
 - Native Claude Code `/model` picker support through the proxy's `/v1/models` endpoint (Claude Code must opt in to Gateway model discovery; see [Model Picker](#model-picker)).
 - Streaming, tool use, reasoning/thinking block handling, and local request optimizations.

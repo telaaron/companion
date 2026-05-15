@@ -194,3 +194,13 @@ def launch_claude(argv: Sequence[str] | None = None) -> None:
             unregister_pid(process.pid)
 
     raise SystemExit(return_code)
+
+
+def ds(argv: Sequence[str] | None = None) -> None:
+    """Backwards-compatible shim — earlier builds shipped a ``ds`` console
+    script that started Claude Code through the proxy. The function was
+    removed upstream but stale shims in pre-existing venvs still try to
+    import it. Keep it as a thin alias to :func:`launch_claude` so the
+    user's terminal habit (``ds`` to start chat) keeps working.
+    """
+    launch_claude(argv)

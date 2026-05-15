@@ -29,6 +29,7 @@ fcc-server = "cli.entrypoints:serve"
 free-claude-code = "cli.entrypoints:serve"
 fcc-init = "cli.entrypoints:init"
 fcc-claude = "cli.entrypoints:launch_claude"
+ds = "cli.entrypoints:ds"
 
 [project.optional-dependencies]
 voice = [

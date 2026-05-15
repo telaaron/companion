@@ -234,17 +234,28 @@ _REGISTRY: dict[str, ToolSpec] = {
     tool.name: tool for tool in (_READ, _WRITE, _LS, _EDIT, _GLOB, _GREP, _BASH)
 }
 
+# Product-specific tools (depend on `api/` packages) are registered at import
+# time via :func:`register_extras`. Keeps ``core/`` provider-neutral while
+# letting the agent loop see one unified surface.
+_EXTRAS: dict[str, ToolSpec] = {}
+
+
+def register_extras(specs: list[ToolSpec]) -> None:
+    """Add product-side tools to the registry. Idempotent on name collisions."""
+    for spec in specs:
+        _EXTRAS[spec.name] = spec
+
 
 def all_tools() -> list[ToolSpec]:
-    """Return every registered tool spec."""
-    return list(_REGISTRY.values())
+    """Return every registered tool spec — core + product extras."""
+    return list(_REGISTRY.values()) + list(_EXTRAS.values())
 
 
 def anthropic_tool_definitions() -> list[dict[str, Any]]:
     """Return tool definitions in the Anthropic ``tools`` array format."""
-    return [tool.to_anthropic_definition() for tool in _REGISTRY.values()]
+    return [tool.to_anthropic_definition() for tool in all_tools()]
 
 
 def get(name: str) -> ToolSpec | None:
     """Look up a tool spec by name, or None if not registered."""
-    return _REGISTRY.get(name)
+    return _REGISTRY.get(name) or _EXTRAS.get(name)

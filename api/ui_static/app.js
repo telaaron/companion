@@ -1162,6 +1162,21 @@
       }
     };
 
+    // Page Visibility — when the tab regains focus, force-reconnect with the
+    // last seen seq. Background tabs sometimes throttle fetch readers; this
+    // guarantees catch-up replay of any events emitted while we were hidden.
+    let pendingResume = false;
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      pendingResume = true;
+      try {
+        ctrl.abort(); // openStream's reader.read() rejects → outer loop reconnects
+      } catch {
+        /* ignore */
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
     try {
       // Auto-reconnect loop: if the stream drops while the job is still
       // running, reconnect with the last seen seq.
@@ -1169,16 +1184,20 @@
         try {
           await openStream();
         } catch (e) {
-          console.warn("event stream interrupted:", e);
+          if (!pendingResume && e.name !== "AbortError") {
+            console.warn("event stream interrupted:", e);
+          }
         }
+        pendingResume = false;
         const job = await api(`/v1/jobs/${encodeURIComponent(jobId)}`).catch(() => null);
         if (!job) break;
         if (["done", "error", "cancelled"].includes(job.status)) break;
         // job still running but our connection dropped — wait then resume
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 400));
         ctrl = new AbortController();
       }
     } finally {
+      document.removeEventListener("visibilitychange", onVisibility);
       assistant.streaming = false;
       node.classList.remove("streaming");
       if (assistant.error) node.classList.add("error");

@@ -25,13 +25,11 @@ async def execute(input_data: dict[str, Any], workspace: Workspace) -> ToolResul
     project_id = input_data.get("project_id") or None
     try:
         limit = int(input_data.get("limit") or 10)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         limit = 10
     limit = max(1, min(limit, 50))
 
-    rows = datastore.memory_search(
-        query, kind=kind, project_id=project_id, limit=limit
-    )
+    rows = datastore.memory_search(query, kind=kind, project_id=project_id, limit=limit)
     if not rows:
         return ToolResult(content=f'No memory hits for query "{query}".')
 

@@ -756,9 +756,7 @@ def memory_index(
     """Add or refresh a memory row in FTS. Keyed by (kind, ref)."""
     try:
         with _connect() as conn:
-            conn.execute(
-                "DELETE FROM memory_fts WHERE kind=? AND ref=?", (kind, ref)
-            )
+            conn.execute("DELETE FROM memory_fts WHERE kind=? AND ref=?", (kind, ref))
             conn.execute(
                 "INSERT INTO memory_fts (kind, title, body, ref, project_id, ts)"
                 " VALUES (?, ?, ?, ?, ?, ?)",

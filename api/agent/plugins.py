@@ -90,11 +90,11 @@ def _obsidian_tools(name: str, vault_path: str) -> list[ToolSpec]:
         except ValueError as exc:
             return ToolResult(content=f"Error: {exc}", is_error=True)
         if not base.is_dir():
-            return ToolResult(
-                content=f"Error: not a directory: {base}", is_error=True
-            )
+            return ToolResult(content=f"Error: not a directory: {base}", is_error=True)
         entries = []
-        for p in sorted(base.rglob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True):
+        for p in sorted(
+            base.rglob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True
+        ):
             try:
                 rel = p.relative_to(vault)
             except ValueError:
@@ -221,4 +221,6 @@ def load_all() -> None:
             )
     if specs:
         register_extras(specs)
-        logger.info("PLUGIN: registered {} tool(s) from {} plugin(s)", len(specs), len(plugins))
+        logger.info(
+            "PLUGIN: registered {} tool(s) from {} plugin(s)", len(specs), len(plugins)
+        )

@@ -317,6 +317,30 @@
     }
 
     card.appendChild(el("h2", {}, "Pick a folder"));
+    // Quick-path chips populated async from /v1/fs/quick-paths.
+    const quickBar = el("div", { class: "quick-paths" });
+    card.appendChild(quickBar);
+    api("/v1/fs/quick-paths")
+      .then((qp) => {
+        quickBar.innerHTML = "";
+        (qp.paths || []).forEach((p) => {
+          quickBar.appendChild(
+            el(
+              "button",
+              {
+                class: "btn btn-ghost btn-sm quick-path",
+                type: "button",
+                title: p.path,
+                onclick: () => load(p.path),
+              },
+              p.label
+            )
+          );
+        });
+      })
+      .catch(() => {
+        quickBar.innerHTML = "";
+      });
     card.appendChild(breadcrumb);
     card.appendChild(
       el(
@@ -366,6 +390,63 @@
     );
 
     load(currentPath);
+  }
+
+  // Async session rename — calls a one-shot, non-streaming completion to ask
+  // the model for a 4-word title summary. Falls back silently on any error.
+  // Skips work if the current title was already user-edited (not derived).
+  async function maybeRenameSessionAsync(session, assistantReply) {
+    if (!session || !session.id) return;
+    const current = (session.title || "").trim();
+    const wasDerived =
+      !current ||
+      current === "untitled" ||
+      current.length > 50 ||
+      current.endsWith("…");
+    if (!wasDerived) return;
+    try {
+      const fresh = await loadSessionDetail(session.id);
+      const msgs = fresh.messages || [];
+      const firstUser = msgs.find((m) => m.role === "user");
+      if (!firstUser) return;
+      const prompt =
+        "Give a 3-6 word title for this conversation. ONLY the title, no quotes, no punctuation.\n\n" +
+        `USER: ${firstUser.content.slice(0, 600)}\n\n` +
+        `ASSISTANT: ${(assistantReply || "").slice(0, 600)}`;
+      const headers = { "Content-Type": "application/json" };
+      if (AUTH) headers.Authorization = `Bearer ${AUTH}`;
+      const response = await fetch("/v1/messages", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: session.model || "deepseek/deepseek-v4-flash",
+          max_tokens: 40,
+          stream: false,
+          messages: [{ role: "user", content: prompt }],
+          metadata: { fcc_internal: "title_rename" },
+        }),
+      });
+      if (!response.ok) return;
+      const body = await response.text();
+      // Server may stream even with stream:false depending on provider; pull
+      // first text chunk we can find.
+      const m = body.match(/"text":\s*"([^"]+)"/);
+      let title = m ? m[1] : "";
+      title = title.replace(/[\n"'`]/g, "").trim();
+      if (title && title.length >= 3 && title.length <= 80) {
+        session.title = title;
+        await updateSession(session.id, {
+          title,
+          model: session.model || "",
+          project_id: session.project_id || null,
+        });
+        const titleEl = document.querySelector(".chat-title");
+        if (titleEl) titleEl.textContent = title;
+        void loadSessions();
+      }
+    } catch {
+      /* silent — derived title from first message is fine fallback */
+    }
   }
 
   function deriveSessionTitle(text) {
@@ -822,6 +903,34 @@
     messagesHost.appendChild(node);
     messagesHost.scrollTop = messagesHost.scrollHeight;
 
+    // Inline cancel button — visible while the job is running, hidden when done.
+    let cancelled = false;
+    const cancelBtn = el(
+      "button",
+      {
+        class: "btn btn-ghost btn-sm cancel-job-btn",
+        type: "button",
+        title: "Cancel this run",
+        onclick: async () => {
+          cancelBtn.disabled = true;
+          cancelBtn.textContent = "Cancelling…";
+          try {
+            await api(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {
+              method: "POST",
+            });
+            cancelled = true;
+            ctrl.abort();
+          } catch (e) {
+            toastShow(`Cancel failed: ${e.message}`, "error");
+            cancelBtn.disabled = false;
+            cancelBtn.textContent = "Stop";
+          }
+        },
+      },
+      "■ Stop"
+    );
+    node.appendChild(cancelBtn);
+
     let lastSeq = -1;
     let ctrl = new AbortController();
 
@@ -937,7 +1046,12 @@
       assistant.streaming = false;
       node.classList.remove("streaming");
       if (assistant.error) node.classList.add("error");
+      if (cancelled) {
+        assistant.content +=
+          (assistant.content ? "\n\n" : "") + "_— cancelled by user_";
+      }
       renderBody();
+      cancelBtn.remove();
       setActiveJob(session.id, null);
       try {
         await appendMessage(session.id, "assistant", assistant.content);
@@ -945,6 +1059,8 @@
         console.warn("persist failed:", e);
       }
       void refreshFooterMetrics();
+      // Async auto-rename via the model if still untitled.
+      void maybeRenameSessionAsync(session, assistant.content);
     }
   }
 
@@ -1427,9 +1543,62 @@
       );
       return;
     }
+    const tbody = el("tbody", {});
+    data.edits.forEach((e) => {
+      let meta = {};
+      try {
+        meta = typeof e.metadata === "string" ? JSON.parse(e.metadata) : (e.metadata || {});
+      } catch {
+        meta = {};
+      }
+      const hasDiff = typeof meta.diff === "string" && meta.diff.trim();
+      const row = el(
+        "tr",
+        {
+          class: hasDiff ? "edits-row clickable" : "edits-row",
+          style: hasDiff ? "cursor:pointer;" : "",
+        },
+        el("td", { class: "mono" }, fmtTime(e.ts)),
+        el("td", {}, el("span", { class: "badge" }, e.op)),
+        el(
+          "td",
+          { class: "mono truncate", style: { maxWidth: "640px" } },
+          e.path
+        ),
+        el(
+          "td",
+          { class: "num tabular" },
+          (e.bytes_delta >= 0 ? "+" : "") + String(e.bytes_delta)
+        ),
+        el(
+          "td",
+          { class: "muted fs-12" },
+          hasDiff ? "click to expand ▾" : ""
+        )
+      );
+      tbody.appendChild(row);
+      if (hasDiff) {
+        const diffRow = el("tr", { class: "edits-diff-row", style: "display:none;" });
+        const diffCell = el(
+          "td",
+          { colspan: "5", style: "padding:0;" },
+          renderDiff(meta.diff)
+        );
+        diffRow.appendChild(diffCell);
+        tbody.appendChild(diffRow);
+        row.addEventListener("click", () => {
+          const open = diffRow.style.display !== "none";
+          diffRow.style.display = open ? "none" : "table-row";
+          const indicator = row.lastChild;
+          if (indicator) {
+            indicator.textContent = open ? "click to expand ▾" : "▴ collapse";
+          }
+        });
+      }
+    });
     const tbl = el(
       "table",
-      { class: "table" },
+      { class: "table edits-table" },
       el(
         "thead",
         {},
@@ -1439,29 +1608,28 @@
           el("th", {}, "time"),
           el("th", {}, "op"),
           el("th", {}, "path"),
-          el("th", {}, "Δ bytes")
+          el("th", {}, "Δ bytes"),
+          el("th", {}, "")
         )
       ),
-      el(
-        "tbody",
-        {},
-        ...data.edits.map((e) =>
-          el(
-            "tr",
-            {},
-            el("td", { class: "mono" }, fmtTime(e.ts)),
-            el("td", {}, el("span", { class: "badge" }, e.op)),
-            el(
-              "td",
-              { class: "mono truncate", style: { maxWidth: "640px" } },
-              e.path
-            ),
-            el("td", { class: "num tabular" }, e.bytes_delta)
-          )
-        )
-      )
+      tbody
     );
     body.appendChild(el("div", { class: "card" }, tbl));
+  }
+
+  // Render a unified-diff string as colorised lines.
+  function renderDiff(diffText) {
+    const pre = el("pre", { class: "diff-pre" });
+    const lines = (diffText || "").split("\n");
+    lines.forEach((line) => {
+      let cls = "diff-context";
+      if (line.startsWith("+++") || line.startsWith("---")) cls = "diff-header";
+      else if (line.startsWith("@@")) cls = "diff-hunk";
+      else if (line.startsWith("+")) cls = "diff-add";
+      else if (line.startsWith("-")) cls = "diff-del";
+      pre.appendChild(el("span", { class: cls }, line + "\n"));
+    });
+    return pre;
   }
 
   // ============================================================ Audit view

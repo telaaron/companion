@@ -236,6 +236,24 @@ async def dispatch_tool_audited(
                 ),
             )
 
+    # Snapshot the file BEFORE Edit/Write so we can emit a unified diff after.
+    pre_snapshot: str | None = None
+    if name in ("Edit", "Write"):
+        raw = tool_use.get("input")
+        target = raw.get("file_path") if isinstance(raw, dict) else None
+        if isinstance(target, str) and target:
+            try:
+                from pathlib import Path as _Path
+
+                p = _Path(target)
+                if not p.is_absolute():
+                    p = workspace.root / p
+                p = p.resolve(strict=False)
+                if p.is_file():
+                    pre_snapshot = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pre_snapshot = None
+
     started = time.monotonic()
     invocation = await _dispatch_tool(tool_use, workspace, agent_ctx)
     duration_ms = int((time.monotonic() - started) * 1000)
@@ -245,7 +263,74 @@ async def dispatch_tool_audited(
         workspace_root=str(workspace.root),
         duration_ms=duration_ms,
     )
+    # Persist file_edits row + unified diff metadata for the diff renderer.
+    if name in ("Edit", "Write") and not invocation.result.is_error:
+        _record_file_edit_with_diff(invocation, workspace, pre_snapshot, request_id)
     return invocation
+
+
+def _record_file_edit_with_diff(
+    invocation: ToolInvocation,
+    workspace: Workspace,
+    pre_snapshot: str | None,
+    request_id: str | None,
+) -> None:
+    """Append a file_edits row including a unified diff in metadata.
+
+    Renders ~50 lines max of unified diff so the dashboard can show inline
+    review of every Edit/Write. Errors get swallowed — recording is
+    best-effort and must not block the agent loop.
+    """
+    try:
+        import difflib
+
+        from api import datastore
+
+        meta = invocation.result.metadata or {}
+        target_path = meta.get("path") or invocation.input.get("file_path", "")
+        bytes_written = int(meta.get("bytes_written") or 0)
+        post_snapshot = ""
+        try:
+            from pathlib import Path as _Path
+
+            p = _Path(target_path)
+            if p.is_file():
+                post_snapshot = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            post_snapshot = ""
+        diff_lines = list(
+            difflib.unified_diff(
+                (pre_snapshot or "").splitlines(),
+                post_snapshot.splitlines(),
+                fromfile="before",
+                tofile="after",
+                lineterm="",
+                n=2,
+            )
+        )
+        # Cap diff to keep DB rows small.
+        if len(diff_lines) > 400:
+            diff_lines = [*diff_lines[:400], "… (truncated)"]
+        op = (
+            "edit"
+            if invocation.name == "Edit"
+            else ("create" if meta.get("created") else "write")
+        )
+        bytes_delta = bytes_written - len(pre_snapshot or "")
+        datastore.record_file_edit(
+            op=op,
+            path=str(target_path),
+            bytes_delta=bytes_delta,
+            metadata={
+                "tool": invocation.name,
+                "request_id": request_id,
+                "replacements": meta.get("replacements"),
+                "diff": "\n".join(diff_lines),
+                "had_prior": pre_snapshot is not None,
+            },
+        )
+    except Exception:
+        pass
 
 
 async def _dispatch_tool(

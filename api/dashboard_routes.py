@@ -595,6 +595,39 @@ async def settings_route(
     }
 
 
+@dashboard_router.get("/v1/fs/quick-paths")
+async def fs_quick_paths(_auth=Depends(require_api_key)) -> dict[str, Any]:
+    """Return common shortcut directories for the folder picker.
+
+    Helps the project workspace dropdown jump to ``~/Desktop``, ``~/Documents``,
+    ``~/Downloads``, the user's home, and the current proxy CWD without typing.
+    Only existing directories are returned.
+    """
+    home = Path.home()
+    candidates = [
+        ("Home", home),
+        ("Desktop", home / "Desktop"),
+        ("Documents", home / "Documents"),
+        ("Downloads", home / "Downloads"),
+        ("Projects", home / "Projects"),
+        ("Code", home / "Code"),
+        ("Sites", home / "Sites"),
+        ("Dev", home / "Dev"),
+        ("CWD", Path(os.getcwd())),
+    ]
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for label, path in candidates:
+        if not path.is_dir():
+            continue
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"label": label, "path": key})
+    return {"paths": out}
+
+
 @dashboard_router.get("/v1/fs/browse")
 async def fs_browse(
     path: str = "",

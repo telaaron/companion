@@ -1359,3 +1359,107 @@ hr {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* ============================================================ Folder picker quick paths */
+
+.quick-paths {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin: var(--sp-2) 0 var(--sp-3) 0;
+}
+
+.btn.quick-path {
+  padding: 3px 10px;
+  font-size: var(--fs-12);
+  background: var(--accent-soft);
+  border-color: rgba(99, 102, 241, 0.3);
+  color: var(--accent);
+}
+
+.btn.quick-path:hover {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: var(--accent);
+}
+
+/* ============================================================ Cancel button in chat */
+
+.cancel-job-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 10px;
+  font-size: var(--fs-12);
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: var(--error);
+}
+
+.cancel-job-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: var(--error);
+}
+
+.cancel-job-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.message.assistant {
+  position: relative;
+}
+
+/* ============================================================ Diff renderer */
+
+.edits-table {
+  width: 100%;
+  table-layout: auto;
+}
+
+.edits-row.clickable:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.edits-diff-row td {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.diff-pre {
+  margin: 0;
+  padding: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+  background: var(--bg-input);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: pre;
+  max-height: 480px;
+}
+
+.diff-pre .diff-header {
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+
+.diff-pre .diff-hunk {
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.06);
+  display: block;
+}
+
+.diff-pre .diff-add {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.08);
+  display: block;
+}
+
+.diff-pre .diff-del {
+  color: var(--error);
+  background: rgba(239, 68, 68, 0.08);
+  display: block;
+}
+
+.diff-pre .diff-context {
+  color: var(--fg-faint);
+}

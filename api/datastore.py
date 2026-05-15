@@ -137,6 +137,36 @@ def init_schema() -> None:
                 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_audit_category
                     ON audit_log(category, ts DESC);
+
+                CREATE TABLE IF NOT EXISTS agent_jobs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+                    project_id TEXT,
+                    model TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending', -- pending|running|done|error|cancelled
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    started_at INTEGER,
+                    finished_at INTEGER,
+                    request_json TEXT NOT NULL DEFAULT '{}',
+                    metadata TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_jobs_session
+                    ON agent_jobs(session_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_jobs_status
+                    ON agent_jobs(status, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS agent_job_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL REFERENCES agent_jobs(id)
+                        ON DELETE CASCADE,
+                    seq INTEGER NOT NULL,         -- monotonic within job
+                    ts INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,     -- 'sse' | 'job_started' | 'job_finished' | 'job_error'
+                    data TEXT NOT NULL DEFAULT '' -- raw SSE chunk OR json payload
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_job_events_seq
+                    ON agent_job_events(job_id, seq);
                 """
             )
             # Lightweight column migrations: older DBs may predate later fields.
@@ -566,6 +596,122 @@ def list_audit(
                 (category, limit),
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ============================================================ Agent jobs
+
+
+def create_agent_job(
+    *,
+    session_id: str | None,
+    project_id: str | None,
+    model: str,
+    request_payload: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Insert a new agent job in ``pending`` state and return the row."""
+    job_id = f"job_{uuid.uuid4().hex[:14]}"
+    now = _ts()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_jobs
+              (id, session_id, project_id, model, status, error,
+               created_at, started_at, finished_at, request_json, metadata)
+            VALUES (?, ?, ?, ?, 'pending', '', ?, NULL, NULL, ?, ?)
+            """,
+            (
+                job_id,
+                session_id,
+                project_id,
+                model,
+                now,
+                json.dumps(request_payload),
+                json.dumps(metadata or {}),
+            ),
+        )
+    return get_agent_job(job_id) or {}
+
+
+def get_agent_job(job_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM agent_jobs WHERE id=?", (job_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_agent_jobs(
+    *, session_id: str | None = None, limit: int = 100
+) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        if session_id is None:
+            rows = conn.execute(
+                "SELECT * FROM agent_jobs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM agent_jobs WHERE session_id=?"
+                " ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_agent_job_status(job_id: str, status: str, *, error: str = "") -> None:
+    """Update lifecycle status. Allowed: running, done, error, cancelled."""
+    now = _ts()
+    with _connect() as conn:
+        if status == "running":
+            conn.execute(
+                "UPDATE agent_jobs SET status=?, started_at=? WHERE id=?",
+                (status, now, job_id),
+            )
+        elif status in ("done", "error", "cancelled"):
+            conn.execute(
+                "UPDATE agent_jobs SET status=?, finished_at=?, error=? WHERE id=?",
+                (status, now, error, job_id),
+            )
+        else:
+            conn.execute("UPDATE agent_jobs SET status=? WHERE id=?", (status, job_id))
+
+
+def append_agent_job_event(job_id: str, *, event_type: str, data: str) -> int:
+    """Append one event to ``agent_job_events``. Returns the new seq number."""
+    now = _ts()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(seq), -1) FROM agent_job_events WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        next_seq = (row[0] if row else -1) + 1
+        conn.execute(
+            "INSERT INTO agent_job_events (job_id, seq, ts, event_type, data)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (job_id, next_seq, now, event_type, data),
+        )
+    return next_seq
+
+
+def list_agent_job_events(
+    job_id: str, *, after_seq: int = -1, limit: int = 5000
+) -> list[dict[str, Any]]:
+    """Return events for ``job_id`` with ``seq > after_seq``, ordered by seq."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT seq, ts, event_type, data FROM agent_job_events"
+            " WHERE job_id=? AND seq>? ORDER BY seq LIMIT ?",
+            (job_id, after_seq, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def latest_agent_job_seq(job_id: str) -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(seq), -1) FROM agent_job_events WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+    return int(row[0]) if row else -1
 
 
 def db_path() -> Path:

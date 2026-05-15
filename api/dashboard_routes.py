@@ -604,3 +604,128 @@ async def capabilities_route(
     from .capabilities import to_payload as capabilities_to_payload
 
     return capabilities_to_payload(scan_capabilities(settings))
+
+
+# ============================================================ Agent jobs (background)
+
+
+class AgentJobIn(BaseModel):
+    """Body for starting a server-managed agent job.
+
+    Decoupled from the request connection: closing the tab does NOT cancel
+    the job. UI subscribes to events via SSE and can reconnect with
+    ``Last-Event-ID`` to resume.
+    """
+
+    model: str = Field(min_length=1, max_length=200)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    system: Any = None
+    max_tokens: int = Field(default=4096, ge=1, le=1_000_000)
+    project_id: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dashboard_router.post("/v1/sessions/{session_id}/jobs")
+async def start_session_job(
+    session_id: str,
+    body: AgentJobIn,
+    request: Request,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Kick off a background agent run for ``session_id``. Returns immediately."""
+    from api.agent.jobs import start_job
+    from api.dependencies import resolve_provider
+
+    settings = request.app.state.__dict__.get("_settings_override") or get_settings()
+    # Resolve provider once at start; jobs.py calls the getter when running.
+    provider_id_route_resolver = request.app  # captured for provider_getter below
+
+    def _provider_getter() -> Any:
+        return resolve_provider(
+            _provider_id_for(body.model),
+            app=provider_id_route_resolver,
+            settings=settings,
+        )
+
+    metadata = dict(body.metadata or {})
+    metadata.setdefault("session_id", session_id)
+    if body.project_id:
+        metadata.setdefault("project_id", body.project_id)
+
+    job = start_job(
+        session_id=session_id,
+        project_id=body.project_id,
+        model=body.model,
+        messages=body.messages,
+        system=body.system,
+        max_tokens=body.max_tokens,
+        provider_getter=_provider_getter,
+        metadata=metadata,
+    )
+    return job
+
+
+def _provider_id_for(model: str) -> str:
+    """Extract the provider prefix from a gateway model ref like ``deepseek/foo``."""
+    if "/" in model:
+        return model.split("/", 1)[0]
+    return model
+
+
+@dashboard_router.get("/v1/jobs/{job_id}")
+async def get_job_status(job_id: str, _auth=Depends(require_api_key)) -> dict[str, Any]:
+    job = datastore.get_agent_job(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    return job
+
+
+@dashboard_router.post("/v1/jobs/{job_id}/cancel")
+async def cancel_job_route(
+    job_id: str, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    from api.agent.jobs import cancel_job
+
+    ok = cancel_job(job_id)
+    return {"job_id": job_id, "cancel_signaled": ok}
+
+
+@dashboard_router.get("/v1/sessions/{session_id}/jobs")
+async def list_session_jobs(
+    session_id: str, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    return {"jobs": datastore.list_agent_jobs(session_id=session_id)}
+
+
+@dashboard_router.get("/v1/jobs/{job_id}/events")
+async def stream_job_events(
+    job_id: str, request: Request, _auth=Depends(require_api_key)
+):
+    """SSE stream: replay stored events from after Last-Event-ID, then tail live."""
+    from fastapi.responses import StreamingResponse
+
+    from api.agent.jobs import event_stream
+
+    job = datastore.get_agent_job(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+
+    after_seq = -1
+    last_event_id = request.headers.get("last-event-id") or request.query_params.get(
+        "last_event_id"
+    )
+    if last_event_id is not None:
+        try:
+            after_seq = int(last_event_id)
+        except ValueError:
+            after_seq = -1
+
+    return StreamingResponse(
+        event_stream(job_id, after_seq=after_seq),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )

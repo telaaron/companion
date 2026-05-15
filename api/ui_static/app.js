@@ -495,6 +495,20 @@
       messages.scrollTop = messages.scrollHeight;
       ta.focus();
     }, 0);
+
+    // Resume in-flight job if the tab was closed mid-stream.
+    const activeJobId = getActiveJob(session.id);
+    if (activeJobId) {
+      api(`/v1/jobs/${encodeURIComponent(activeJobId)}`)
+        .then((job) => {
+          if (job && ["pending", "running"].includes(job.status)) {
+            streamJobIntoChat(session, activeJobId, messages);
+          } else {
+            setActiveJob(session.id, null);
+          }
+        })
+        .catch(() => setActiveJob(session.id, null));
+    }
   }
 
   function renderChatMessage(msg) {
@@ -518,11 +532,58 @@
     return wrap;
   }
 
+  // localStorage helpers: track the in-flight job_id per session so the chat
+  // can resume if the tab closed mid-stream.
+  function activeJobKey(sessionId) {
+    return `fcc:active_job:${sessionId}`;
+  }
+  function setActiveJob(sessionId, jobId) {
+    if (jobId) localStorage.setItem(activeJobKey(sessionId), jobId);
+    else localStorage.removeItem(activeJobKey(sessionId));
+  }
+  function getActiveJob(sessionId) {
+    return localStorage.getItem(activeJobKey(sessionId));
+  }
+
   async function sendInChat(session, modelSelected, text, messagesHost) {
     // Persist user msg.
     const userRow = await appendMessage(session.id, "user", text);
     messagesHost.appendChild(renderChatMessage(userRow));
 
+    const fresh = await loadSessionDetail(session.id);
+    const messages = (fresh.messages || []).map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    // Background-job flow: server owns the request lifetime, the UI just
+    // watches an event stream. Tab close ≠ job cancellation.
+    let job;
+    try {
+      job = await api(`/v1/sessions/${encodeURIComponent(session.id)}/jobs`, {
+        method: "POST",
+        body: JSON.stringify({
+          model: modelSelected || "deepseek/deepseek-v4-flash",
+          messages,
+          max_tokens: 4096,
+          project_id: session.project_id || null,
+          metadata: { session_id: session.id },
+        }),
+      });
+    } catch (e) {
+      const errMsg = { role: "assistant", content: `Error starting job: ${e.message}`, error: true };
+      messagesHost.appendChild(renderChatMessage(errMsg));
+      return;
+    }
+    setActiveJob(session.id, job.id);
+
+    await streamJobIntoChat(session, job.id, messagesHost);
+  }
+
+  // streamJobIntoChat: open the SSE event-source for a job and pump chunks
+  // into the chat view. Idempotent — safe to call on remount with an existing
+  // job_id (replays from seq 0).
+  async function streamJobIntoChat(session, jobId, messagesHost) {
     const assistant = {
       role: "assistant",
       content: "",
@@ -533,42 +594,62 @@
     messagesHost.appendChild(node);
     messagesHost.scrollTop = messagesHost.scrollHeight;
 
-    // Build messages list from server state (already includes the user we just saved).
-    const fresh = await loadSessionDetail(session.id);
-    const messages = (fresh.messages || []).map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    let lastSeq = -1;
+    let ctrl = new AbortController();
 
-    const payload = {
-      model: modelSelected || "claude-3-5-sonnet-20241022",
-      max_tokens: 4096,
-      stream: true,
-      messages,
-      metadata: {
-        user_id: `fcc:project_id=${session.project_id || ""},session_id=${session.id}`,
-        // Routed through workspace_resolver so the agent loop sandboxes Bash
-        // and file ops to this project's directory when set.
-        project_id: session.project_id || null,
-        session_id: session.id,
-      },
+    const renderBody = () => {
+      const body = node.querySelector(".message-body");
+      if (body) body.innerHTML = md(assistant.content);
+      messagesHost.scrollTop = messagesHost.scrollHeight;
     };
 
-    const ctrl = new AbortController();
-    try {
-      const response = await fetch("/v1/messages", {
-        method: "POST",
-        signal: ctrl.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${AUTH}`,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify(payload),
-      });
+    const consumeChunk = (rawBlock) => {
+      // rawBlock may contain id:, event:, data: lines (one event)
+      const lines = rawBlock.split("\n");
+      let eventType = "sse";
+      const dataParts = [];
+      for (const line of lines) {
+        if (line.startsWith("id:")) {
+          const v = parseInt(line.slice(3).trim(), 10);
+          if (!Number.isNaN(v)) lastSeq = v;
+        } else if (line.startsWith("event:")) {
+          eventType = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          dataParts.push(line.slice(5).trim());
+        }
+      }
+      const data = dataParts.join("");
+      if (eventType === "sse" || eventType === "") {
+        // raw upstream SSE chunk — re-wrap to feed our existing parser
+        handleSseEvent(rawBlock, assistant);
+        renderBody();
+        return;
+      }
+      if (eventType === "job_finished" || eventType === "job_error") {
+        if (eventType === "job_error") {
+          assistant.error = true;
+          try {
+            const p = JSON.parse(data);
+            assistant.content += (assistant.content ? "\n\n" : "") + `Error: ${p.error || "unknown"}`;
+          } catch {
+            assistant.content += (assistant.content ? "\n\n" : "") + "Error";
+          }
+          renderBody();
+        }
+        // job done — caller breaks out of stream
+      }
+    };
+
+    const openStream = async () => {
+      const headers = {
+        Accept: "text/event-stream",
+      };
+      if (AUTH) headers.Authorization = `Bearer ${AUTH}`;
+      if (lastSeq >= 0) headers["Last-Event-ID"] = String(lastSeq);
+      const url = `/v1/jobs/${encodeURIComponent(jobId)}/events`;
+      const response = await fetch(url, { headers, signal: ctrl.signal });
       if (!response.ok || !response.body) {
-        const text = await response.text().catch(() => "");
-        throw new Error(`HTTP ${response.status}: ${text.slice(0, 240)}`);
+        throw new Error(`HTTP ${response.status}`);
       }
       const reader = response.body.getReader();
       const dec = new TextDecoder("utf-8");
@@ -581,29 +662,38 @@
         while ((idx = buf.indexOf("\n\n")) !== -1) {
           const ev = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
-          handleSseEvent(ev, assistant);
-          const body = node.querySelector(".message-body");
-          if (body) body.innerHTML = md(assistant.content);
-          messagesHost.scrollTop = messagesHost.scrollHeight;
+          if (ev.trim() && !ev.trim().startsWith(":")) consumeChunk(ev);
         }
       }
-    } catch (err) {
-      assistant.error = true;
-      assistant.content +=
-        (assistant.content ? "\n\n" : "") + `Error: ${err.message || err}`;
+    };
+
+    try {
+      // Auto-reconnect loop: if the stream drops while the job is still
+      // running, reconnect with the last seen seq.
+      while (true) {
+        try {
+          await openStream();
+        } catch (e) {
+          console.warn("event stream interrupted:", e);
+        }
+        const job = await api(`/v1/jobs/${encodeURIComponent(jobId)}`).catch(() => null);
+        if (!job) break;
+        if (["done", "error", "cancelled"].includes(job.status)) break;
+        // job still running but our connection dropped — wait then resume
+        await new Promise((r) => setTimeout(r, 800));
+        ctrl = new AbortController();
+      }
     } finally {
       assistant.streaming = false;
       node.classList.remove("streaming");
       if (assistant.error) node.classList.add("error");
-      const body = node.querySelector(".message-body");
-      if (body) body.innerHTML = md(assistant.content);
-      // Persist assistant turn.
+      renderBody();
+      setActiveJob(session.id, null);
       try {
         await appendMessage(session.id, "assistant", assistant.content);
       } catch (e) {
         console.warn("persist failed:", e);
       }
-      // Refresh nav-footer cost metrics.
       void refreshFooterMetrics();
     }
   }

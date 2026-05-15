@@ -2,12 +2,14 @@
 
 import traceback
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from starlette.types import Receive, Scope, Send
 
@@ -17,9 +19,12 @@ from core.trace import extract_claude_session_id_from_headers, trace_event
 from providers.exceptions import ProviderError
 
 from .admin_routes import router as admin_router
+from .dashboard_routes import dashboard_router
 from .routes import router
 from .runtime import AppRuntime, startup_failure_message
 from .validation_log import summarize_request_validation_body
+
+_UI_STATIC_DIR = Path(__file__).resolve().parent / "ui_static"
 
 
 @asynccontextmanager
@@ -111,6 +116,35 @@ def create_app(*, lifespan_enabled: bool = True) -> FastAPI:
     # Register routes
     app.include_router(admin_router)
     app.include_router(router)
+    app.include_router(dashboard_router)
+
+    # Browser UI — single bundle served at /ui. Existing `/` route stays JSON
+    # for API tooling. `/app` (legacy 2-day SPA prototype) and `/admin` keep
+    # working but redirect users toward /ui.
+    if _UI_STATIC_DIR.is_dir():
+        app.mount(
+            "/ui",
+            StaticFiles(directory=str(_UI_STATIC_DIR), html=True),
+            name="ui",
+        )
+
+        @app.get("/ui", include_in_schema=False)
+        async def _ui_redirect() -> RedirectResponse:
+            return RedirectResponse(url="/ui/", status_code=307)
+
+        @app.get("/app", include_in_schema=False)
+        async def _app_legacy_redirect() -> RedirectResponse:
+            return RedirectResponse(url="/ui/", status_code=308)
+
+        @app.get("/app/", include_in_schema=False)
+        async def _app_slash_legacy_redirect() -> RedirectResponse:
+            return RedirectResponse(url="/ui/", status_code=308)
+    else:
+        logger.warning(
+            "UI static dir not found at {} — /ui will 404 until the package "
+            "is reinstalled.",
+            _UI_STATIC_DIR,
+        )
 
     # Exception handlers
     @app.exception_handler(RequestValidationError)

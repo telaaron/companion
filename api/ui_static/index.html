@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark light" />
+<title>free-claude-code</title>
+<link rel="stylesheet" href="styles.css" />
+<link
+  rel="icon"
+  href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23111'/%3E%3Ctext y='.9em' font-size='70' x='15' fill='%236366f1'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E"
+/>
+</head>
+<body>
+<div id="app" class="app">
+
+  <!-- ============================================================ Sidebar nav -->
+  <nav id="nav" class="nav" aria-label="Primary">
+    <header class="nav-header">
+      <div class="brand">
+        <div class="brand-mark">✦</div>
+        <div class="brand-text">
+          <div class="brand-name">free-claude-code</div>
+          <div class="brand-tag" id="brand-status">checking…</div>
+        </div>
+      </div>
+    </header>
+
+    <div class="nav-section">
+      <button class="nav-item active" data-route="chat">
+        <span class="nav-icon">◇</span> Chat
+      </button>
+      <button class="nav-item" data-route="projects">
+        <span class="nav-icon">▣</span> Projects
+      </button>
+      <button class="nav-item" data-route="usage">
+        <span class="nav-icon">↗</span> Usage
+      </button>
+      <button class="nav-item" data-route="files">
+        <span class="nav-icon">≡</span> File edits
+      </button>
+      <button class="nav-item" data-route="audit">
+        <span class="nav-icon">◐</span> Audit log
+      </button>
+      <button class="nav-item" data-route="env">
+        <span class="nav-icon">⚿</span> Env vault
+      </button>
+      <button class="nav-item" data-route="root">
+        <span class="nav-icon">✎</span> Root files
+      </button>
+      <button class="nav-item" data-route="skills">
+        <span class="nav-icon">★</span> Skills
+      </button>
+      <button class="nav-item" data-route="settings">
+        <span class="nav-icon">⚙</span> Settings
+      </button>
+    </div>
+
+    <footer class="nav-footer">
+      <div class="metric">
+        <div class="metric-label">today</div>
+        <div class="metric-value" id="metric-today">$0.00</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">7d</div>
+        <div class="metric-value" id="metric-week">$0.00</div>
+      </div>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle theme">
+        <span id="theme-toggle-label">dark</span>
+      </button>
+    </footer>
+  </nav>
+
+  <!-- ============================================================ Main view -->
+  <main id="view" class="view"></main>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

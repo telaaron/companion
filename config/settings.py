@@ -27,7 +27,14 @@ class ConfiguredChatModelRef:
 
 
 def _env_files() -> tuple[Path, ...]:
-    """Return env file paths in priority order (later overrides earlier)."""
+    """Return env file paths in priority order (later overrides earlier).
+
+    Order:
+    1. ``./.env`` (project-local, lowest priority — useful for one-off overrides)
+    2. ``~/.config/free-claude-code/.env`` (global — wins by default so a
+       project's empty ``DEEPSEEK_API_KEY=`` cannot strip the real key)
+    3. ``$FCC_ENV_FILE`` (explicit override, highest priority)
+    """
     files: list[Path] = [
         Path(".env"),
         Path.home() / ".config" / "free-claude-code" / ".env",
@@ -112,6 +119,41 @@ class Settings(BaseSettings):
     # ==================== DeepSeek Config ====================
     deepseek_api_key: str = Field(default="", validation_alias="DEEPSEEK_API_KEY")
 
+    # ==================== Gemini Config (vision fallback for DeepSeek) ====================
+    gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+
+    # DeepSeek image-to-text vision fallback. DeepSeek's Anthropic endpoint has no
+    # vision support, so when these are set, image blocks are described by a
+    # vision model (Gemini by default) and converted to text before the request
+    # reaches DeepSeek. The vision call receives the recent conversation as
+    # context so descriptions stay relevant to the ongoing task.
+    deepseek_image_fallback_provider: str = Field(
+        default="", validation_alias="DEEPSEEK_IMAGE_FALLBACK_PROVIDER"
+    )
+    deepseek_image_fallback_model: str = Field(
+        default="", validation_alias="DEEPSEEK_IMAGE_FALLBACK_MODEL"
+    )
+    deepseek_image_fallback_base_url: str = Field(
+        default="", validation_alias="DEEPSEEK_IMAGE_FALLBACK_BASE_URL"
+    )
+    deepseek_image_fallback_api_key: str = Field(
+        default="", validation_alias="DEEPSEEK_IMAGE_FALLBACK_API_KEY"
+    )
+
+    # ==================== Image Generation (built-in proxy tool) ====================
+    # When configured, the proxy intercepts user prompts that match an
+    # image-gen trigger (``imagine: ...``, ``erstelle bild ...``) and calls
+    # the configured model directly, bypassing DeepSeek. Returns an
+    # Anthropic SSE stream with a markdown image link.
+    #
+    # Recommended: ``openrouter`` + ``google/gemini-2.5-flash-image-preview``
+    # (uses your OPENROUTER_API_KEY automatically).
+    image_gen_provider: str = Field(default="", validation_alias="IMAGE_GEN_PROVIDER")
+    image_gen_model: str = Field(default="", validation_alias="IMAGE_GEN_MODEL")
+    image_gen_base_url: str = Field(default="", validation_alias="IMAGE_GEN_BASE_URL")
+    image_gen_api_key: str = Field(default="", validation_alias="IMAGE_GEN_API_KEY")
+    image_gen_size: str = Field(default="1024x1024", validation_alias="IMAGE_GEN_SIZE")
+
     # ==================== Kimi Config ====================
     kimi_api_key: str = Field(default="", validation_alias="KIMI_API_KEY")
 
@@ -172,6 +214,19 @@ class Settings(BaseSettings):
     model_sonnet: str | None = Field(default=None, validation_alias="MODEL_SONNET")
     model_haiku: str | None = Field(default=None, validation_alias="MODEL_HAIKU")
 
+    # Subagent override — Claude Code's subagent traffic uses haiku-class
+    # models. Routing it to a cheaper provider is a major cost saver on
+    # tool-heavy sessions. Format: ``provider/model``.
+    model_subagent: str | None = Field(default=None, validation_alias="MODEL_SUBAGENT")
+
+    # Fallback chain: comma-separated ``provider/model`` refs tried in order
+    # when the primary provider errors before any SSE chunk is emitted.
+    # Mid-stream failover is impossible (would corrupt the client). Format:
+    # ``deepseek/deepseek-v4-pro,nvidia_nim/z-ai/glm4.7,open_router/...``
+    model_fallback_chain: str = Field(
+        default="", validation_alias="MODEL_FALLBACK_CHAIN"
+    )
+
     # ==================== Per-Provider Proxy ====================
     nvidia_nim_proxy: str = Field(default="", validation_alias="NVIDIA_NIM_PROXY")
     open_router_proxy: str = Field(default="", validation_alias="OPENROUTER_PROXY")
@@ -203,12 +258,28 @@ class Settings(BaseSettings):
         default=None, validation_alias="ENABLE_HAIKU_THINKING"
     )
 
+    # Optional per-tier thinking budget caps. When set, clamp the requested
+    # ``thinking.budget_tokens`` to this value (request can ask for less, never
+    # more). Useful when a provider's reasoning is slow or expensive.
+    thinking_budget_max: int | None = Field(
+        default=None, validation_alias="THINKING_BUDGET_MAX"
+    )
+    opus_thinking_budget_max: int | None = Field(
+        default=None, validation_alias="OPUS_THINKING_BUDGET_MAX"
+    )
+    sonnet_thinking_budget_max: int | None = Field(
+        default=None, validation_alias="SONNET_THINKING_BUDGET_MAX"
+    )
+    haiku_thinking_budget_max: int | None = Field(
+        default=None, validation_alias="HAIKU_THINKING_BUDGET_MAX"
+    )
+
     # ==================== HTTP Client Timeouts ====================
     http_read_timeout: float = Field(
-        default=120.0, validation_alias="HTTP_READ_TIMEOUT"
+        default=600.0, validation_alias="HTTP_READ_TIMEOUT"
     )
     http_write_timeout: float = Field(
-        default=10.0, validation_alias="HTTP_WRITE_TIMEOUT"
+        default=60.0, validation_alias="HTTP_WRITE_TIMEOUT"
     )
     http_connect_timeout: float = Field(
         default=HTTP_CONNECT_TIMEOUT_DEFAULT,
@@ -537,6 +608,52 @@ class Settings(BaseSettings):
         if "sonnet" in name_lower and self.enable_sonnet_thinking is not None:
             return self.enable_sonnet_thinking
         return self.enable_model_thinking
+
+    def fallback_chain_refs(self) -> tuple[str, ...]:
+        """Parse ``MODEL_FALLBACK_CHAIN`` into a tuple of ``provider/model`` refs.
+
+        Empty entries and the primary MODEL value are filtered out
+        automatically (would loop on retry).
+        """
+        chain = (self.model_fallback_chain or "").strip()
+        if not chain:
+            return ()
+        seen: set[str] = set()
+        refs: list[str] = []
+        for raw in chain.split(","):
+            ref = raw.strip()
+            if not ref or ref in seen or "/" not in ref:
+                continue
+            seen.add(ref)
+            refs.append(ref)
+        return tuple(refs)
+
+    def resolve_subagent(self, claude_model_name: str) -> str | None:
+        """Return ``MODEL_SUBAGENT`` when this looks like a subagent request.
+
+        Claude Code's subagent traffic uses haiku-class models. Detected via
+        the model name; conservative match keeps main-thread sonnet/opus on
+        configured routes.
+        """
+        if not self.model_subagent:
+            return None
+        if "haiku" not in claude_model_name.lower():
+            return None
+        return self.model_subagent
+
+    def resolve_thinking_budget_cap(self, claude_model_name: str) -> int | None:
+        """Resolve the upper bound on ``thinking.budget_tokens`` for this model.
+
+        Returns ``None`` when no cap is configured (request value passes through).
+        """
+        name_lower = claude_model_name.lower()
+        if "opus" in name_lower and self.opus_thinking_budget_max is not None:
+            return self.opus_thinking_budget_max
+        if "haiku" in name_lower and self.haiku_thinking_budget_max is not None:
+            return self.haiku_thinking_budget_max
+        if "sonnet" in name_lower and self.sonnet_thinking_budget_max is not None:
+            return self.sonnet_thinking_budget_max
+        return self.thinking_budget_max
 
     def web_fetch_allowed_scheme_set(self) -> frozenset[str]:
         """Return normalized schemes allowed for web_fetch."""

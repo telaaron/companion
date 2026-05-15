@@ -139,39 +139,9 @@ async def admin_capabilities(request: Request):
     return capabilities_to_payload(scan_capabilities(settings))
 
 
-# ============================================================================
-# Unified SPA shell at /app/* — single localhost URL for everything.
-# ============================================================================
-
-
-@router.get("/app", include_in_schema=False)
-async def spa_root(request: Request):
-    """SPA entry — serves the same shell whether the path is /app or /app/foo."""
-    require_loopback_admin(request)
-    return _spa_asset_response("index.html")
-
-
-@router.get("/app/", include_in_schema=False)
-async def spa_root_slash(request: Request):
-    require_loopback_admin(request)
-    return _spa_asset_response("index.html")
-
-
-@router.get("/app/assets/{path:path}", include_in_schema=False)
-async def spa_assets(path: str, request: Request):
-    """Serve any file from spa_static/ (CSS, JS, page modules)."""
-    require_loopback_admin(request)
-    return _spa_asset_response(path)
-
-
-@router.get("/app/{page:path}", include_in_schema=False)
-async def spa_page(page: str, request: Request):
-    """Catch-all for client-side routes — all return the shell."""
-    require_loopback_admin(request)
-    head = page.strip("/").split("/", 1)[0]
-    if head and head not in SPA_PAGE_NAMES:
-        raise HTTPException(status_code=404, detail="Unknown SPA route")
-    return _spa_asset_response("index.html")
+# The earlier prototype SPA at /app/* has been superseded by the full UI at
+# /ui. The api/app.py redirects /app and /app/ → /ui/ to avoid breaking
+# bookmarks created during the prototype window.
 
 
 @router.get("/admin/api/config")

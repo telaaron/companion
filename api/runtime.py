@@ -137,8 +137,7 @@ class AppRuntime:
 
             desktop = await mcp.bootstrap_from_claude_desktop()
             yaml_results: list[dict[str, Any]] = [
-                await mcp.register_mcp_server(**spec)
-                for spec in pending_mcp_servers()
+                await mcp.register_mcp_server(**spec) for spec in pending_mcp_servers()
             ]
             results = desktop + yaml_results
             running = [r for r in results if r.get("status") == "running"]

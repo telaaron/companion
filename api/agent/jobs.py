@@ -16,6 +16,7 @@ Architecture:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from collections.abc import AsyncIterator
@@ -28,7 +29,9 @@ from api.agent.agent_loop_streaming import run_agent_streaming
 from api.agent.global_rate_limit import configure as configure_global_tool_limiter
 from api.agent.workspace_resolver import parse_bash_denylist, resolve_workspace
 from api.models.anthropic import Message, MessagesRequest
+from api.pricing import estimate_token_cost
 from config.settings import Settings, get_settings
+from core.tools.sse_collector import _iter_events
 from providers.base import BaseProvider
 
 # Active tasks keyed by job_id — kept so we can cancel from /v1/jobs/{id}/cancel.
@@ -81,11 +84,19 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
     datastore.append_agent_job_event(
         job_id, event_type="job_started", data=json.dumps({"ts": int(time.time())})
     )
+    started_ms = int(time.time() * 1000)
+    # Usage totals accumulated across all turns of this job.
+    accumulated_usage: dict[str, int] = {}
+    provider_id = ""
+    provider_model = ""
+    session_id: str | None = None
+    project_id: str | None = None
     try:
         job = datastore.get_agent_job(job_id)
         if not job:
             raise RuntimeError(f"job {job_id} vanished after creation")
         payload = json.loads(job["request_json"])
+        session_id = job.get("session_id")
 
         # Inject project shared_context as the system prompt when the job is
         # scoped to a project. This is what makes the project's brief actually
@@ -120,6 +131,8 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
         router = ModelRouter(settings)
         try:
             routed = router.resolve_messages_request(request)
+            provider_id = routed.resolved.provider_id
+            provider_model = routed.resolved.provider_model
             request = routed.request
         except Exception as exc:
             logger.warning("Job {} routing failed: {}", job_id, exc)
@@ -146,15 +159,34 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             global_limiter=global_limiter,
         ):
             datastore.append_agent_job_event(job_id, event_type="sse", data=chunk)
+            _accumulate_chunk_usage(chunk, accumulated_usage)
 
         datastore.mark_agent_job_status(job_id, "done")
         datastore.append_agent_job_event(
             job_id, event_type="job_finished", data=json.dumps({"status": "done"})
         )
+        _record_job_usage(
+            job_id=job_id,
+            provider_id=provider_id,
+            provider_model=provider_model,
+            usage=accumulated_usage,
+            started_ms=started_ms,
+            session_id=session_id,
+            project_id=project_id,
+        )
     except asyncio.CancelledError:
         datastore.mark_agent_job_status(job_id, "cancelled")
         datastore.append_agent_job_event(
             job_id, event_type="job_finished", data=json.dumps({"status": "cancelled"})
+        )
+        _record_job_usage(
+            job_id=job_id,
+            provider_id=provider_id,
+            provider_model=provider_model,
+            usage=accumulated_usage,
+            started_ms=started_ms,
+            session_id=session_id,
+            project_id=project_id,
         )
         raise
     except Exception as exc:
@@ -165,6 +197,97 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             event_type="job_error",
             data=json.dumps({"error": str(exc), "type": type(exc).__name__}),
         )
+        _record_job_usage(
+            job_id=job_id,
+            provider_id=provider_id,
+            provider_model=provider_model,
+            usage=accumulated_usage,
+            started_ms=started_ms,
+            session_id=session_id,
+            project_id=project_id,
+        )
+
+
+_SUMMABLE_USAGE_KEYS = frozenset(
+    {
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    }
+)
+
+
+def _accumulate_chunk_usage(chunk: str, aggregate: dict[str, int]) -> None:
+    """Parse SSE chunk and extract usage counters from the final message_delta.
+
+    ``run_agent_streaming`` emits a single synthetic ``message_delta`` at the
+    end of the job (via ``_emit_final_lifecycle``) whose ``usage`` field holds
+    the complete multi-turn aggregated token counts. We read only that event so
+    we don't double-count the per-turn ``message_start`` usage that the
+    streaming rewriter also forwards.
+
+    Defensively ignores malformed events or missing fields — never crashes.
+    """
+    try:
+        for event_type, data in _iter_events(chunk):
+            if data is None:
+                continue
+            actual = data.get("type") or event_type
+            if actual != "message_delta":
+                continue
+            usage = data.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            for key in _SUMMABLE_USAGE_KEYS:
+                val = usage.get(key)
+                if isinstance(val, int):
+                    aggregate[key] = aggregate.get(key, 0) + val
+    except Exception:
+        pass  # never let usage parsing crash the job
+
+
+def _record_job_usage(
+    *,
+    job_id: str,
+    provider_id: str,
+    provider_model: str,
+    usage: dict[str, int],
+    started_ms: int,
+    session_id: str | None,
+    project_id: str | None,
+) -> None:
+    """Persist accumulated usage to the datastore. Best-effort."""
+    if not usage:
+        return
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    duration_ms = max(0, int(time.time() * 1000) - started_ms)
+    cost_usd = 0.0
+    if provider_id and provider_model:
+        with contextlib.suppress(Exception):
+            cost_usd = estimate_token_cost(
+                provider=provider_id,
+                model=provider_model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+    datastore.record_usage(
+        kind="chat",
+        provider=provider_id or "unknown",
+        model=provider_model or "unknown",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_usd=cost_usd,
+        duration_ms=duration_ms,
+        session_id=session_id,
+        project_id=project_id,
+        request_id=job_id,
+        metadata={
+            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+        },
+    )
 
 
 def _build_messages_request(payload: dict[str, Any]) -> MessagesRequest:

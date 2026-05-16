@@ -1163,3 +1163,48 @@ async def preview_file(
         "truncated": False,
         "path": str(resolved),
     }
+
+
+# ============================================================ Memory / RAG index
+
+_rescan_in_flight = False
+
+
+@dashboard_router.get("/v1/index/status")
+async def index_status(
+    request: Request, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    """Return current RAG index metrics."""
+    from api.agent.indexer import index_status as _index_status
+
+    status = _index_status()
+    status["rescan_in_flight"] = _rescan_in_flight
+    return status
+
+
+@dashboard_router.post("/v1/index/rescan")
+async def index_rescan(
+    request: Request, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    """Trigger a full re-scan of all configured index paths."""
+    global _rescan_in_flight
+
+    indexer = getattr(request.app.state, "indexer", None)
+    paths: list[str] = getattr(request.app.state, "index_paths", [])
+
+    if indexer is None or not paths:
+        return {"ok": False, "reason": "Indexer not running — set MEMORY_INDEX_PATHS"}
+
+    if _rescan_in_flight:
+        return {"ok": False, "reason": "Rescan already in flight"}
+
+    async def _run() -> None:
+        global _rescan_in_flight
+        _rescan_in_flight = True
+        try:
+            await indexer.rescan(paths)
+        finally:
+            _rescan_in_flight = False
+
+    asyncio.create_task(_run())
+    return {"ok": True}

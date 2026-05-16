@@ -235,6 +235,7 @@
     env: { label: "Env vault", render: () => renderEnv() },
     root: { label: "Root files", render: () => renderRoot() },
     skills: { label: "Skills", render: () => renderSkills() },
+    memory: { label: "Memory", render: () => renderMemory() },
     settings: { label: "Settings", render: () => renderSettings() },
   };
   let currentRoute = location.hash.replace("#", "") || "chat";
@@ -3737,6 +3738,118 @@
       pathLabel,
       langBadge
     );
+  }
+
+  // ============================================================ Memory / RAG index page
+  async function renderMemory() {
+    const view = $("#view");
+    view.innerHTML = "";
+
+    let status = null;
+    let rescanInFlight = false;
+
+    const statusEl = el("div", { class: "memory-status" }, "Loading…");
+    const rescanBtn = el(
+      "button",
+      {
+        class: "btn primary",
+        onclick: async () => {
+          if (rescanInFlight) return;
+          rescanBtn.disabled = true;
+          rescanBtn.textContent = "Rescanning…";
+          try {
+            await api("POST", "/v1/index/rescan");
+          } catch (e) {
+            /* ignore */
+          }
+          rescanBtn.textContent = "Rescan now";
+          rescanBtn.disabled = false;
+        },
+      },
+      "Rescan now"
+    );
+
+    function renderStatus(s) {
+      if (!s) return;
+      rescanInFlight = s.rescan_in_flight || false;
+      rescanBtn.disabled = rescanInFlight;
+      rescanBtn.textContent = rescanInFlight ? "Scanning…" : "Rescan now";
+
+      const lastScan = s.last_scan_ms
+        ? new Date(s.last_scan_ms).toLocaleString()
+        : "never";
+      statusEl.innerHTML = "";
+      statusEl.appendChild(
+        el(
+          "div",
+          { class: "memory-grid" },
+          el(
+            "div",
+            { class: "stat-card" },
+            el("div", { class: "stat-value" }, String(s.file_count ?? 0)),
+            el("div", { class: "stat-label" }, "files indexed")
+          ),
+          el(
+            "div",
+            { class: "stat-card" },
+            el("div", { class: "stat-value" }, String(s.total_chunks ?? 0)),
+            el("div", { class: "stat-label" }, "total chunks")
+          ),
+          el(
+            "div",
+            { class: "stat-card" },
+            el(
+              "div",
+              { class: "stat-value" },
+              s.index_bytes
+                ? (s.index_bytes / 1024 / 1024).toFixed(1) + " MB"
+                : "0 MB"
+            ),
+            el("div", { class: "stat-label" }, "indexed bytes")
+          ),
+          el(
+            "div",
+            { class: "stat-card" },
+            el("div", { class: "stat-value" }, lastScan),
+            el("div", { class: "stat-label" }, "last scan")
+          )
+        )
+      );
+    }
+
+    async function refresh() {
+      try {
+        status = await api("GET", "/v1/index/status");
+        renderStatus(status);
+      } catch (e) {
+        statusEl.textContent = "Indexer not running — set MEMORY_INDEX_PATHS";
+      }
+    }
+
+    const body = el("div", { class: "page-body" }, statusEl);
+    view.appendChild(
+      el(
+        "div",
+        { class: "page" },
+        pageHeader({
+          title: "Memory index",
+          sub: "RAG over files, notes, and chat turns",
+          actions: [rescanBtn],
+        }),
+        body
+      )
+    );
+
+    await refresh();
+    const interval = setInterval(refresh, 10_000);
+    // stop polling when user navigates away
+    const observer = new MutationObserver(() => {
+      if (!view.contains(body)) {
+        clearInterval(interval);
+        observer.disconnect();
+      }
+    });
+    observer.observe(view, { childList: true });
   }
 
   // ============================================================ Boot

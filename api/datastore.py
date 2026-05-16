@@ -798,6 +798,7 @@ def memory_search(
     *,
     kind: str | None = None,
     project_id: str | None = None,
+    path_prefix: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     """Keyword-rank search across memory_fts. Returns ordered by FTS rank."""
@@ -812,6 +813,9 @@ def memory_search(
     if project_id:
         where.append("project_id=?")
         args.append(project_id)
+    if path_prefix:
+        where.append("ref LIKE ?")
+        args.append(path_prefix + "%")
     sql = (
         "SELECT kind, title, body, ref, project_id, ts FROM memory_fts WHERE "
         + " AND ".join(where)
@@ -830,6 +834,27 @@ def memory_count() -> int:
     with _connect() as conn:
         row = conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone()
     return int(row[0]) if row else 0
+
+
+def memory_count_by_kind(kind: str) -> int:
+    """Return the number of FTS rows with the given kind."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM memory_fts WHERE kind=?", (kind,)
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def memory_delete_path(path: str) -> None:
+    """Remove all FTS chunks whose ref starts with *path* (kind='file')."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "DELETE FROM memory_fts WHERE kind='file' AND ref LIKE ?",
+                (path + "%",),
+            )
+    except Exception as exc:
+        logger.warning("MEMORY: delete_path failed ({})", exc)
 
 
 def db_path() -> Path:

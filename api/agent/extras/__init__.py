@@ -91,7 +91,8 @@ _SEARCH = ToolSpec(
     name="Search",
     description=(
         "Keyword-rank search across the proxy's memory index (chat turns, "
-        "file edits, pinned notes). Useful for recalling earlier context. "
+        "indexed files, pinned notes). Useful for recalling earlier context "
+        "or finding notes/code that match a topic. "
         "Supports FTS5 syntax: quoted phrases, prefix * suffix, AND/OR/NOT."
     ),
     input_schema={
@@ -101,6 +102,13 @@ _SEARCH = ToolSpec(
             "kind": {
                 "type": "string",
                 "description": "Optional filter — 'message', 'file', or 'note'.",
+            },
+            "path_prefix": {
+                "type": "string",
+                "description": (
+                    "Optional absolute path prefix to restrict file hits "
+                    "(e.g. '/home/user/notes' returns only chunks from that dir)."
+                ),
             },
             "project_id": {"type": "string"},
             "limit": {"type": "integer", "default": 10},

@@ -355,6 +355,27 @@ class Settings(BaseSettings):
         validation_alias="AGENT_BASH_EXTRA_ENV",
     )
 
+    # ==================== Memory / RAG indexer ====================
+    # Comma-separated absolute paths to scan and watch for file indexing.
+    # Empty string ⇒ indexer is disabled.
+    memory_index_paths: str = Field(
+        default="",
+        validation_alias="MEMORY_INDEX_PATHS",
+        description="Comma-separated absolute paths to index (empty = disabled).",
+    )
+    # Maximum total bytes of FTS data before the indexer stops adding files.
+    memory_index_max_bytes: int = Field(
+        default=500_000_000,
+        validation_alias="MEMORY_INDEX_MAX_BYTES",
+        description="Max index size in bytes before skipping new files.",
+    )
+    # Comma-separated file extensions to index.
+    memory_index_exts: str = Field(
+        default=".md,.txt,.py,.ts,.tsx,.js,.json,.yaml,.yml,.toml,.rst",
+        validation_alias="MEMORY_INDEX_EXTS",
+        description="Comma-separated extensions to include in the index.",
+    )
+
     # ==================== Job Notifier (Slack / Discord webhooks) ====================
     # When set, a POST is sent to the webhook URL when a long-running agent job
     # finishes (status "done" or "error"). Never fires on "cancelled".

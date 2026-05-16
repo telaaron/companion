@@ -88,6 +88,8 @@ class AppRuntime:
     app: FastAPI
     settings: Settings
     _provider_registry: ProviderRegistry | None = field(default=None, init=False)
+    _indexer: Any | None = field(default=None, init=False)
+    _index_paths: list[str] = field(default_factory=list, init=False)
     messaging_platform: MessagingPlatform | None = None
     message_handler: ClaudeMessageHandler | None = None
     cli_manager: CLISessionManager | None = None
@@ -112,6 +114,7 @@ class AppRuntime:
             self._provider_registry.start_model_list_refresh(self.settings)
             await self._start_messaging_if_configured()
             await self._bootstrap_mcp_servers()
+            await self._start_indexer_if_configured()
             self._publish_state()
             logger.info("Server URL: {}", root_url)
             logger.info("Admin UI: {} (local-only)", admin_url)
@@ -164,6 +167,53 @@ class AppRuntime:
                 exc.message,
             )
 
+    async def _start_indexer_if_configured(self) -> None:
+        """Start the RAG file indexer when MEMORY_INDEX_PATHS is configured."""
+        paths_str = (
+            getattr(self.settings, "memory_index_paths", None) or ""
+        ).strip()
+        if not paths_str:
+            return
+        paths: list[str] = [p.strip() for p in paths_str.split(",") if p.strip()]
+        if not paths:
+            return
+
+        exts_str = (
+            getattr(self.settings, "memory_index_exts", None) or ""
+        ).strip()
+        allowed_exts = (
+            frozenset(e.strip() for e in exts_str.split(",") if e.strip())
+            if exts_str
+            else None
+        )
+        max_bytes: int = getattr(
+            self.settings, "memory_index_max_bytes", 500_000_000
+        )
+
+        try:
+            from api.agent.indexer import Indexer
+
+            indexer = Indexer(
+                max_bytes=max_bytes,
+                allowed_exts=allowed_exts,
+            )
+            self._indexer = indexer
+            self._index_paths = paths
+            self.app.state.indexer = indexer
+            self.app.state.index_paths = paths
+
+            # Run initial scan in background so startup isn't blocked
+            async def _scan_and_watch() -> None:
+                try:
+                    await indexer.rescan(paths)
+                    await indexer.start_watch(paths)
+                except Exception as exc:
+                    logger.warning("INDEXER: startup error: {}", exc)
+
+            asyncio.create_task(_scan_and_watch())
+        except Exception as exc:
+            logger.warning("INDEXER: failed to start: {}", exc)
+
     async def shutdown(self) -> None:
         verbose = self.settings.log_api_error_tracebacks
         if self.message_handler is not None:
@@ -179,6 +229,12 @@ class AppRuntime:
                     )
 
         logger.info("Shutdown requested, cleaning up...")
+        if self._indexer is not None:
+            await best_effort(
+                "indexer.stop",
+                self._indexer.stop(),
+                log_verbose_errors=verbose,
+            )
         if self.messaging_platform:
             await best_effort(
                 "messaging_platform.stop",

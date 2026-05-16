@@ -2292,15 +2292,149 @@
     view.innerHTML = "";
     view.appendChild(
       pageHeader({
-        title: "Skills",
-        sub: "discovered SKILL.md files in your Claude install",
+        title: "Tools & Connectors",
+        sub: "MCP servers + skills · auto-discovered from your Claude install",
       })
     );
     const body = el("div", { class: "page-body" });
     view.appendChild(body);
-    const data = await api("/v1/skills");
+
+    // ---------- MCP servers section
+    const mcpSection = el("section", { class: "skills-section" });
+    mcpSection.appendChild(
+      el(
+        "div",
+        { class: "section-heading" },
+        el("h3", {}, "MCP servers"),
+        el(
+          "span",
+          { class: "muted fs-12" },
+          "discovered from claude_desktop_config.json"
+        )
+      )
+    );
+    const mcpGrid = el("div", { class: "grid-cards" });
+    mcpSection.appendChild(mcpGrid);
+    body.appendChild(mcpSection);
+    const mcpData = await api("/v1/mcp").catch(() => ({ discovered: [], running: [] }));
+    const runningByName = Object.fromEntries(
+      (mcpData.running || []).map((r) => [r.name, r])
+    );
+    if (!mcpData.discovered?.length) {
+      mcpGrid.appendChild(
+        el(
+          "div",
+          { class: "empty" },
+          el("div", { class: "empty-icon" }, "🔌"),
+          el("div", { class: "empty-title" }, "No MCP servers discovered"),
+          el(
+            "div",
+            { class: "empty-sub" },
+            "Configure Claude Desktop's mcpServers or drop a YAML in plugins/"
+          )
+        )
+      );
+    } else {
+      for (const srv of mcpData.discovered) {
+        const live = runningByName[srv.name];
+        const status = live?.status || "stopped";
+        const toolCount = live?.tool_count || 0;
+        const card = el(
+          "article",
+          { class: "mcp-card mcp-" + status },
+          el(
+            "header",
+            { class: "mcp-card-header" },
+            el(
+              "div",
+              { class: "mcp-card-meta" },
+              el("strong", {}, srv.name),
+              el("div", { class: "muted fs-12" }, srv.command + " " + (srv.args || []).join(" "))
+            ),
+            el(
+              "span",
+              { class: "pill pill-" + (status === "running" ? "ok" : "warn") },
+              status
+            )
+          ),
+          el(
+            "div",
+            { class: "mcp-card-body" },
+            el(
+              "span",
+              { class: "muted fs-12" },
+              `${toolCount} tool${toolCount === 1 ? "" : "s"}`
+            ),
+            ...(live?.tools || []).slice(0, 6).map((t) =>
+              el("span", { class: "mcp-tool-chip" }, t)
+            ),
+            (live?.tools || []).length > 6
+              ? el("span", { class: "muted fs-12" }, ` +${live.tools.length - 6} more`)
+              : null
+          ),
+          el(
+            "div",
+            { class: "mcp-card-actions" },
+            el(
+              "button",
+              {
+                class: "btn btn-sm",
+                onclick: async () => {
+                  try {
+                    await api(`/v1/mcp/${encodeURIComponent(srv.name)}/restart`, {
+                      method: "POST",
+                    });
+                    toastShow(`${srv.name}: restart triggered`, "ok");
+                    setTimeout(renderSkills, 800);
+                  } catch (e) {
+                    toastShow(`Restart failed: ${e.message}`, "error");
+                  }
+                },
+              },
+              status === "running" ? "Restart" : "Start"
+            ),
+            status === "running"
+              ? el(
+                  "button",
+                  {
+                    class: "btn btn-sm btn-ghost",
+                    onclick: async () => {
+                      try {
+                        await api(`/v1/mcp/${encodeURIComponent(srv.name)}/stop`, {
+                          method: "POST",
+                        });
+                        toastShow(`${srv.name}: stopped`, "ok");
+                        setTimeout(renderSkills, 400);
+                      } catch (e) {
+                        toastShow(`Stop failed: ${e.message}`, "error");
+                      }
+                    },
+                  },
+                  "Stop"
+                )
+              : null,
+            live?.last_error
+              ? el("span", { class: "muted fs-12" }, live.last_error)
+              : null
+          )
+        );
+        mcpGrid.appendChild(card);
+      }
+    }
+
+    // ---------- Skills section
+    const skillsSection = el("section", { class: "skills-section" });
+    skillsSection.appendChild(
+      el(
+        "div",
+        { class: "section-heading" },
+        el("h3", {}, "Skills"),
+        el("span", { class: "muted fs-12" }, "SKILL.md files in your Claude install")
+      )
+    );
+    const data = await api("/v1/skills").catch(() => ({ skills: [], search_paths: [] }));
     if (!data.skills?.length) {
-      body.appendChild(
+      skillsSection.appendChild(
         el(
           "div",
           { class: "empty" },
@@ -2313,25 +2447,26 @@
           )
         )
       );
-      return;
-    }
-    const grid = el("div", { class: "grid-cards" });
-    for (const s of data.skills) {
-      grid.appendChild(
-        el(
-          "div",
-          { class: "card" },
-          el("div", { class: "card-title" }, s.name),
-          el("div", { class: "card-sub" }, s.description || "no description"),
+    } else {
+      const grid = el("div", { class: "grid-cards" });
+      for (const s of data.skills) {
+        grid.appendChild(
           el(
             "div",
-            { class: "muted truncate", style: { fontSize: "11px" } },
-            s.path
+            { class: "card" },
+            el("div", { class: "card-title" }, s.name),
+            el("div", { class: "card-sub" }, s.description || "no description"),
+            el(
+              "div",
+              { class: "muted truncate", style: { fontSize: "11px" } },
+              s.path
+            )
           )
-        )
-      );
+        );
+      }
+      skillsSection.appendChild(grid);
     }
-    body.appendChild(grid);
+    body.appendChild(skillsSection);
   }
 
   // ============================================================ Settings view

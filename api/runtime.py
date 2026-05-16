@@ -111,6 +111,7 @@ class AppRuntime:
             await self._validate_configured_models_best_effort()
             self._provider_registry.start_model_list_refresh(self.settings)
             await self._start_messaging_if_configured()
+            await self._bootstrap_mcp_servers()
             self._publish_state()
             logger.info("Server URL: {}", root_url)
             logger.info("Admin UI: {} (local-only)", admin_url)
@@ -127,6 +128,27 @@ class AppRuntime:
                 log_verbose_errors=self.settings.log_api_error_tracebacks,
             )
             raise
+
+    async def _bootstrap_mcp_servers(self) -> None:
+        """Boot every MCP server in the user's Claude Desktop config + plugins."""
+        try:
+            from api.agent import mcp
+            from api.agent.plugins import pending_mcp_servers
+
+            desktop = await mcp.bootstrap_from_claude_desktop()
+            yaml_results: list[dict[str, Any]] = [
+                await mcp.register_mcp_server(**spec)
+                for spec in pending_mcp_servers()
+            ]
+            results = desktop + yaml_results
+            running = [r for r in results if r.get("status") == "running"]
+            logger.info(
+                "MCP bootstrap: {}/{} server(s) running",
+                len(running),
+                len(results),
+            )
+        except Exception as exc:
+            logger.warning("MCP bootstrap raised: {}", exc)
 
     async def _validate_configured_models_best_effort(self) -> None:
         """Warm validation status without blocking first-run/admin access."""

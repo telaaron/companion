@@ -677,6 +677,38 @@ async def fs_browse(
     }
 
 
+@dashboard_router.get("/v1/mcp")
+async def list_mcp(_auth=Depends(require_api_key)) -> dict[str, Any]:
+    """Return live status of every MCP server the proxy knows about."""
+    from api.agent import mcp
+
+    return {
+        "discovered": mcp.discover_claude_mcp_servers(),
+        "running": mcp.list_clients(),
+    }
+
+
+@dashboard_router.post("/v1/mcp/{name}/restart")
+async def restart_mcp(name: str, _auth=Depends(require_api_key)) -> dict[str, Any]:
+    """Stop + start the named MCP server (re-runs tool discovery)."""
+    from api.agent import mcp
+
+    desktop = {s["name"]: s for s in mcp.discover_claude_mcp_servers()}
+    if name not in desktop:
+        raise HTTPException(404, f"unknown MCP server: {name}")
+    return await mcp.register_mcp_server(**desktop[name])
+
+
+@dashboard_router.post("/v1/mcp/{name}/stop")
+async def stop_mcp(name: str, _auth=Depends(require_api_key)) -> dict[str, Any]:
+    from api.agent import mcp
+
+    if name not in mcp._CLIENTS:
+        raise HTTPException(404, "server not running")
+    await mcp._CLIENTS[name].stop()
+    return {"ok": True, "name": name}
+
+
 @dashboard_router.get("/v1/capabilities")
 async def capabilities_route(
     settings: Settings = Depends(get_settings), _auth=Depends(require_api_key)

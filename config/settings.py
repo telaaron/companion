@@ -148,8 +148,15 @@ class Settings(BaseSettings):
     #
     # Recommended: ``openrouter`` + ``google/gemini-2.5-flash-image-preview``
     # (uses your OPENROUTER_API_KEY automatically).
-    image_gen_provider: str = Field(default="", validation_alias="IMAGE_GEN_PROVIDER")
-    image_gen_model: str = Field(default="", validation_alias="IMAGE_GEN_MODEL")
+    # Default image-gen is OpenRouter-routed Flux Schnell — cheap (~$0.003/img)
+    # and fast (~2s). User can swap to dall-e, ideogram, etc. via the wizard.
+    image_gen_provider: str = Field(
+        default="open_router", validation_alias="IMAGE_GEN_PROVIDER"
+    )
+    image_gen_model: str = Field(
+        default="black-forest-labs/flux-1-schnell",
+        validation_alias="IMAGE_GEN_MODEL",
+    )
     image_gen_base_url: str = Field(default="", validation_alias="IMAGE_GEN_BASE_URL")
     image_gen_api_key: str = Field(default="", validation_alias="IMAGE_GEN_API_KEY")
     image_gen_size: str = Field(default="1024x1024", validation_alias="IMAGE_GEN_SIZE")

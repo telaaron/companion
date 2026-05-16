@@ -1,0 +1,6 @@
+# Obsidian vault — auto-registered as Obsidian/List/Read/Append tools.
+# Edit `vault_path` to point at your vault (the folder that contains the
+# `.obsidian/` directory). The path can use ``~`` for $HOME.
+name: vault
+kind: obsidian_vault
+vault_path: ~/Documents/Obsidian Vault

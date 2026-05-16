@@ -197,6 +197,9 @@ def load_all() -> None:
     """Discover plugins + register their tools. Idempotent on re-import."""
     plugins = discover_plugins()
     specs: list[ToolSpec] = []
+    # MCP servers are async — collect specs and launch them after the sync
+    # plugin types are registered so they're available even if MCP fails.
+    mcp_servers: list[dict[str, Any]] = []
     for plugin in plugins:
         kind = plugin.get("kind", "")
         name = plugin.get("name") or Path(plugin.get("__source__", "plugin")).stem
@@ -209,6 +212,20 @@ def load_all() -> None:
                 )
                 continue
             specs.extend(_obsidian_tools(name, vault_path))
+        elif kind == "mcp_server":
+            command = plugin.get("command")
+            if not command:
+                logger.warning(
+                    "PLUGIN {}: mcp_server is missing 'command' — skipped",
+                    plugin.get("__source__"),
+                )
+                continue
+            # MCP args come as a flat YAML field — split shell-style on spaces.
+            args_raw = plugin.get("args") or ""
+            args = [a for a in args_raw.split() if a]
+            mcp_servers.append(
+                {"name": name, "command": command, "args": args, "env": {}}
+            )
         elif kind == "mcp_server":
             logger.info(
                 "PLUGIN {}: kind=mcp_server is a placeholder — subprocess wiring "
@@ -224,3 +241,15 @@ def load_all() -> None:
         logger.info(
             "PLUGIN: registered {} tool(s) from {} plugin(s)", len(specs), len(plugins)
         )
+    # MCP servers from YAML plugins are queued here; the real subprocess start
+    # happens in AppRuntime._bootstrap_mcp_servers (async lifecycle hook).
+    if mcp_servers:
+        _PENDING_MCP_SERVERS.extend(mcp_servers)
+
+
+_PENDING_MCP_SERVERS: list[dict[str, Any]] = []
+
+
+def pending_mcp_servers() -> list[dict[str, Any]]:
+    """Return YAML-defined MCP servers waiting for async startup."""
+    return list(_PENDING_MCP_SERVERS)

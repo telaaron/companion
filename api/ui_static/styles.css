@@ -645,6 +645,7 @@ hr {
   flex-direction: column;
   gap: var(--sp-2);
   animation: msg-in 180ms ease-out;
+  position: relative;
 }
 @keyframes msg-in {
   from { opacity: 0; transform: translateY(2px); }
@@ -690,6 +691,98 @@ hr {
   margin-left: 2px;
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* Regenerate button — overlay bottom-right of assistant bubble. */
+.regen-btn {
+  position: absolute;
+  bottom: -8px;
+  right: -8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 120ms ease, transform 120ms ease, color 120ms ease, border-color 120ms ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  z-index: 2;
+}
+.message.assistant:hover .regen-btn,
+.regen-btn:focus-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.regen-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.regen-popover {
+  position: absolute;
+  bottom: 28px;
+  right: -8px;
+  min-width: 260px;
+  max-width: 360px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.32);
+  padding: var(--sp-2);
+  z-index: 50;
+  animation: regen-pop-in 120ms ease-out;
+}
+@keyframes regen-pop-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.regen-popover-header {
+  font-size: var(--fs-11);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+}
+.regen-popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.regen-popover-item {
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  text-align: left;
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-13);
+  font-family: var(--font-mono);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.regen-popover-item:hover {
+  background: var(--bg-overlay);
+  color: var(--accent);
+}
+.regen-popover-item.current {
+  color: var(--fg-muted);
+}
+.regen-popover-item.current::after {
+  content: " · current";
+  color: var(--fg-faint);
+  font-size: var(--fs-11);
+}
 
 .composer {
   border-top: 1px solid var(--border);

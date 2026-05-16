@@ -477,6 +477,177 @@ in the channel. Same agent loop, same tools.
 
 ---
 
+## Phase 5 — Remote access (home server → worldwide encrypted)
+
+> **Stack pick (recommended)**: **Cloudflare Tunnel + Cloudflare Access (OIDC)**
+> for the public URL, **Tailscale** for the always-on private path. Both end
+> up TLS-encrypted, both avoid port-forwarding on the home router. Cloudflare
+> Access fronts the proxy with a Google / GitHub login wall so a leaked URL
+> isn't an open door. Companion adds JWT verification of the
+> `Cf-Access-Jwt-Assertion` header as defense in depth.
+>
+> Alternatives we ruled out:
+> - **Bare reverse proxy + Let's Encrypt** — needs port-forward + dynamic DNS;
+>   you also own auth + WAF, more rope than upside.
+> - **WireGuard solo** — Tailscale on top is the same protocol with painless
+>   key exchange and ACLs. Skip raw WireGuard unless you want the audit story.
+> - **VPN-free public exposure** — never. Companion gives a shell to the model;
+>   exposing it without auth would be a footgun of historic proportions.
+
+### 5.1 Auth layer (prerequisite)
+**Goal**: every dashboard/API call requires either a Bearer token (existing
+`ANTHROPIC_AUTH_TOKEN`) **or** a Cloudflare Access JWT. Anonymous requests
+are 401.
+
+**Files**:
+- `api/auth.py` (new) — `verify_cf_access_jwt(token, audience, team)` using
+  Cloudflare's JWKS (`https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`).
+  Cache JWKS for 1 h.
+- `api/dependencies.py::require_api_key` — accept either header; reject if
+  neither validates.
+- `config/settings.py` — `CF_ACCESS_AUD`, `CF_ACCESS_TEAM`, `AUTH_REQUIRED`
+  (default `true` when binding non-loopback).
+- `api/runtime.py` — warn loudly at startup if `AUTH_REQUIRED=false` and the
+  proxy is bound to `0.0.0.0`.
+
+**Acceptance**:
+- Unauthenticated `curl https://companion.<domain>/v1/sessions` → 401.
+- Cloudflare-Access-logged request → 200.
+- Local `curl -H "Authorization: Bearer $TOKEN"` → 200.
+
+**Risks**: locking yourself out on first deploy — keep a `--bind 127.0.0.1`
+escape hatch.
+
+---
+
+### 5.2 Cloudflare Tunnel quickstart script
+**Goal**: `./scripts/remote-up.sh` provisions a tunnel and prints the public
+URL plus the exact Access policy to paste.
+
+**Files**:
+- `scripts/remote-up.sh` — `cloudflared tunnel login`, create tunnel named
+  `companion-<hostname>`, write `~/.cloudflared/config.yml`, run
+  `cloudflared tunnel route dns ... <subdomain>.<domain>`, start as launchd
+  service.
+- `docs/remote.md` — full walkthrough with screenshots.
+
+**Acceptance**: fresh Mac, no port-forward, runs `./scripts/remote-up.sh
+mydomain.com` → 90 s later `https://companion.mydomain.com` works from a
+phone on cellular and is gated by the configured Google login.
+
+**Risks**: Cloudflare account + a domain in their nameservers required.
+Document the Tailscale fallback for users without a domain.
+
+---
+
+### 5.3 Tailscale recipe + headless-server image
+**Goal**: a `docker-compose.yml` + Tailscale sidecar so an old Mac mini /
+Raspberry Pi / NUC hosts Companion 24/7, accessible only on the tailnet.
+
+**Files**:
+- `deploy/docker/Dockerfile` — Python 3.14 slim + uv + repo + entrypoint.
+- `deploy/docker/docker-compose.yml` — `companion` service + `tailscale`
+  sidecar with `TS_AUTHKEY`.
+- `deploy/README.md` — copy-pasteable instructions for the three home-lab
+  flavors (Mac mini launchd, Pi systemd, NUC docker).
+
+**Acceptance**: laptop on cellular reaches `http://companion.<tailnet>:8082/ui/`
+with no Cloudflare account in the loop.
+
+**Risks**: macOS LaunchAgent path differs from Linux systemd — separate
+recipes, not one universal one.
+
+---
+
+### 5.4 mTLS escape hatch (paranoid mode)
+**Goal**: optional client-certificate auth for users who want zero trust on
+public CAs.
+
+**Files**:
+- `scripts/issue-client-cert.sh` — generate a CA + client cert pair.
+- `api/runtime.py` — add `--client-cert <ca.pem>` flag; uvicorn verifies on
+  connect.
+
+**Acceptance**: browser without the matching cert → handshake fails.
+
+---
+
+## Phase 6 — Routines (Claude-Code-style scheduled / triggered automation)
+
+> **Vision**: routines = stored "agent jobs with a trigger". A trigger can
+> be cron (`0 9 * * *`), a filesystem event, an inbox webhook, or a manual
+> button. The job is the same payload the chat already produces. Reusing
+> the existing `agent_jobs` table + scheduler keeps the surface area tiny.
+
+### 6.1 Routine model + scheduler
+**Goal**: persist routines in SQLite, fire them on schedule via an in-process
+scheduler. Each fire creates a normal background job that can be inspected
+in the existing jobs UI.
+
+**Files**:
+- `api/datastore.py` — `routines` table:
+  `(id, name, description, trigger_type, trigger_config (json), payload (json),
+  enabled, project_id, last_run_ms, next_run_ms, created_at)`.
+  Plus `routine_runs (id, routine_id, job_id, status, started_at, finished_at)`.
+- `api/agent/routines.py` (new) — `RoutineScheduler` class using
+  `apscheduler` (or a tiny custom asyncio loop that ticks every 30 s and
+  checks `next_run_ms`). On fire: enqueue agent job via `jobs.enqueue(...)`
+  with payload + `metadata.source = "routine:<id>"`.
+- `api/runtime.py` — start the scheduler in `startup()`, stop in
+  `shutdown()`.
+
+**Trigger types (v1)**:
+- `cron` — `{"expression": "0 9 * * *", "tz": "Europe/Berlin"}`.
+- `manual` — runs only when a user clicks "Run now".
+- `webhook` — exposes `POST /v1/routines/{id}/trigger` with a secret.
+
+**Acceptance**:
+- Create a routine `{name: "daily journal", trigger: cron 9am, payload:
+  {model: deepseek/..., messages: [{"role":"user","content":"Run the morning journal."}]}}`.
+- At 09:00 server-local, a job fires, the agent runs, vault gets a new
+  entry. Job appears in `/v1/jobs` with `metadata.source = "routine:..."`.
+
+**Risks**:
+- Misfire on system sleep (Mac). Mark misfired routines with
+  `next_run_ms < now - 5min` as run-once-on-resume.
+- Don't double-fire on a server restart that lands inside the same minute
+  as a cron tick — guard with `last_run_ms`.
+
+---
+
+### 6.2 Routines UI
+**Goal**: `/ui` → Routines page with CRUD + "Run now" + per-routine run
+history.
+
+**Files**:
+- `api/dashboard_routes.py` — `GET/POST/PATCH/DELETE /v1/routines`,
+  `POST /v1/routines/{id}/run`, `GET /v1/routines/{id}/runs`.
+- `api/ui_static/app.js` — new page module reusing the existing
+  page-router. List + drawer-form + cron-expression preview ("Next: in
+  3 h 12 m").
+- `api/ui_static/styles.css` — table + cron preview chip.
+
+**Acceptance**: build one routine end-to-end from the UI, see it fire on
+schedule, inspect the run in the Jobs page.
+
+---
+
+### 6.3 Trigger marketplace (templates)
+**Goal**: a starter library of routines ("Daily news digest", "Refactor
+TODO sweeper", "Inbox triage", "Standup-notes summarizer") that one click
+installs into the user's routines list.
+
+**Files**:
+- `routines/` directory with `<slug>.yaml` templates.
+- `api/dashboard_routes.py` — `GET /v1/routines/templates` returns parsed
+  YAMLs.
+- UI: "From template…" picker in the routines drawer.
+
+**Acceptance**: pick "Daily news digest" → routine created with sensible
+defaults → fires next morning → user sees a summary in chat.
+
+---
+
 ## How to pick an item
 
 1. Read the goal + why + files.

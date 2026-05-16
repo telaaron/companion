@@ -934,6 +934,14 @@
 
     const messages = el("div", { class: "messages" });
     host.appendChild(messages);
+    // Stash regen-ctx on the host so streamJobIntoChat can find it after a
+    // streaming reply finishes (no signature churn through callers).
+    messages._regenCtx = {
+      session,
+      modelOptions,
+      defaultModel,
+      getMessagesHost: () => messages,
+    };
 
     const composer = el(
       "form",
@@ -985,7 +993,7 @@
 
     // Render existing messages
     for (const m of session.messages || []) {
-      messages.appendChild(renderChatMessage(m));
+      messages.appendChild(renderChatMessage(m, messages._regenCtx));
     }
     setTimeout(() => {
       messages.scrollTop = messages.scrollHeight;
@@ -1007,7 +1015,7 @@
     }
   }
 
-  function renderChatMessage(msg) {
+  function renderChatMessage(msg, ctx) {
     const wrap = el(
       "article",
       { class: "message " + (msg.role || "assistant") },
@@ -1025,7 +1033,101 @@
     );
     if (msg.streaming) wrap.classList.add("streaming");
     if (msg.error) wrap.classList.add("error");
+
+    // Regenerate button on assistant bubbles (Perplexity-style).
+    // Skip while streaming — only finalized replies get one.
+    if (
+      ctx &&
+      (msg.role || "assistant") === "assistant" &&
+      !msg.streaming &&
+      !msg.error
+    ) {
+      attachRegenerateButton(wrap, ctx);
+    }
     return wrap;
+  }
+
+  // attachRegenerateButton: ↺ overlay opens a model-picker popover.
+  // Picking a model re-fires the *previous* user message through it,
+  // appending a fresh assistant turn below.
+  function attachRegenerateButton(messageNode, ctx) {
+    const btn = el(
+      "button",
+      {
+        class: "regen-btn",
+        type: "button",
+        title: "Regenerate with another model",
+      },
+      "↺"
+    );
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      // Close any existing popovers first.
+      document
+        .querySelectorAll(".regen-popover")
+        .forEach((n) => n.remove());
+
+      const pop = el("div", { class: "regen-popover" });
+      const header = el(
+        "div",
+        { class: "regen-popover-header" },
+        "Regenerate with…"
+      );
+      pop.appendChild(header);
+
+      const list = el("div", { class: "regen-popover-list" });
+      for (const m of ctx.modelOptions) {
+        const item = el(
+          "button",
+          {
+            class: "regen-popover-item",
+            type: "button",
+          },
+          m
+        );
+        if (m === ctx.defaultModel) item.classList.add("current");
+        item.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          pop.remove();
+          const prevUserText = findPrevUserText(messageNode);
+          if (!prevUserText) {
+            toastShow("Nothing to regenerate — no prior user message.", "error");
+            return;
+          }
+          await sendInChat(
+            ctx.session,
+            m,
+            prevUserText,
+            ctx.getMessagesHost()
+          );
+        });
+        list.appendChild(item);
+      }
+      pop.appendChild(list);
+      messageNode.appendChild(pop);
+
+      // Click-away to dismiss.
+      const dismiss = (ev) => {
+        if (!pop.contains(ev.target) && ev.target !== btn) {
+          pop.remove();
+          document.removeEventListener("click", dismiss);
+        }
+      };
+      setTimeout(() => document.addEventListener("click", dismiss), 0);
+    });
+    messageNode.appendChild(btn);
+  }
+
+  function findPrevUserText(assistantNode) {
+    let cursor = assistantNode.previousElementSibling;
+    while (cursor) {
+      if (cursor.classList && cursor.classList.contains("user")) {
+        const body = cursor.querySelector(".message-body");
+        return body ? body.innerText.trim() : "";
+      }
+      cursor = cursor.previousElementSibling;
+    }
+    return "";
   }
 
   // localStorage helpers: track the in-flight job_id per session so the chat
@@ -1289,6 +1391,10 @@
       renderBody();
       cancelBtn.remove();
       setActiveJob(session.id, null);
+      // Attach regenerate button now that the reply is finalized.
+      if (!assistant.error && messagesHost._regenCtx) {
+        attachRegenerateButton(node, messagesHost._regenCtx);
+      }
       try {
         await appendMessage(session.id, "assistant", assistant.content);
       } catch (e) {

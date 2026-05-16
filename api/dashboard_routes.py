@@ -843,3 +843,104 @@ async def stream_job_events(
             "Connection": "keep-alive",
         },
     )
+
+
+# ============================================================ File preview
+
+
+_PREVIEW_SIZE_LIMIT = 1 * 1024 * 1024  # 1 MiB
+
+# Map file extensions to Prism language identifiers.
+_EXT_TO_LANG: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".jsx": "javascript",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".html": "markup",
+    ".htm": "markup",
+    ".xml": "markup",
+    ".svg": "markup",
+    ".css": "css",
+    ".sql": "sql",
+    ".rs": "rust",
+    ".go": "go",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".md": "markdown",
+    ".markdown": "markdown",
+}
+
+
+def _lang_for_path(path: Path) -> str:
+    """Return a Prism language id for a file path, or 'plaintext'."""
+    return _EXT_TO_LANG.get(path.suffix.lower(), "plaintext")
+
+
+@dashboard_router.get("/v1/preview/file")
+async def preview_file(
+    path: str,
+    session_id: str = "",
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return a file's contents for the preview side panel.
+
+    Path is resolved through the configured workspace so path traversal
+    is blocked.  Files larger than 1 MiB are refused with HTTP 413.
+    """
+    from core.tools.workspace import Workspace, WorkspaceViolation
+
+    if not path:
+        raise HTTPException(400, "path is required")
+
+    workspace_root = settings.agent_default_workspace or os.getcwd()
+    workspace = Workspace.create(workspace_root, allow_outside_root=False)
+
+    try:
+        resolved = workspace.resolve(path)
+    except WorkspaceViolation as exc:
+        logger.info("PREVIEW: path traversal blocked path={!r} reason={}", path, exc)
+        raise HTTPException(403, f"path outside workspace: {exc}") from exc
+
+    if not resolved.is_file():
+        raise HTTPException(404, "file not found")
+
+    size = resolved.stat().st_size
+    if size > _PREVIEW_SIZE_LIMIT:
+        raise HTTPException(
+            413,
+            detail={
+                "message": "file too large for preview",
+                "size": size,
+                "limit": _PREVIEW_SIZE_LIMIT,
+                "truncated": True,
+            },
+        )
+
+    try:
+        content = resolved.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise HTTPException(500, f"cannot read file: {exc}") from exc
+
+    language = _lang_for_path(resolved)
+    logger.debug(
+        "PREVIEW: path={} size={} language={} session_id={}",
+        path,
+        size,
+        language,
+        session_id,
+    )
+    return {
+        "content": content,
+        "language": language,
+        "size": size,
+        "truncated": False,
+        "path": str(resolved),
+    }

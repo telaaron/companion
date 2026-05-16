@@ -193,6 +193,15 @@
     s = s.replace(/§§TOOL§§(.+?)§§\/TOOL§§/gs, (_m, payload) => {
       try {
         const o = JSON.parse(decodeURIComponent(payload));
+        const isFileOp = /^(Read|Write|Edit)$/i.test(o.name || "");
+        // Extract the first argument as path for file operations.
+        const rawArgs = (o.args || "").trim();
+        const filePath = isFileOp ? rawArgs.split(",")[0].trim().replace(/^["']|["']$/g, "") : "";
+        const dataPath = filePath ? ` data-filepath="${escapeHtml(filePath)}"` : "";
+        const dataKind = isFileOp
+          ? ` data-filekind="${escapeHtml(/^Write$/i.test(o.name) ? "write" : "read")}"`
+          : "";
+        const clickable = isFileOp && filePath ? ` tool-block-clickable` : "";
         const header =
           `<span class="tool-glyph">${escapeHtml(o.icon || "●")}</span>` +
           `<span class="tool-name">${escapeHtml(o.name || "")}</span>` +
@@ -200,7 +209,7 @@
         const body = o.body
           ? `<details class="tool-body"><summary>show output</summary><pre>${escapeHtml(o.body)}</pre></details>`
           : "";
-        return `<div class="tool-block">${header}${body}</div>`;
+        return `<div class="tool-block${clickable}"${dataPath}${dataKind}>${header}${body}</div>`;
       } catch {
         return "";
       }
@@ -943,6 +952,17 @@
       getMessagesHost: () => messages,
     };
 
+    // Event delegation: click on a file-tool block opens the preview panel.
+    messages.addEventListener("click", (e) => {
+      const block = e.target.closest(".tool-block-clickable");
+      if (!block) return;
+      const path = block.dataset.filepath;
+      const kind = block.dataset.filekind || "read";
+      if (!path) return;
+      _previewPush(session.id, path, kind);
+      openPreviewPanel(path, session.id);
+    });
+
     const composer = el(
       "form",
       {
@@ -991,8 +1011,22 @@
     const ta = $("textarea", composer);
     host.appendChild(composer);
 
-    // Render existing messages
+    // Render existing messages; populate preview LRU from past tool calls.
+    const _seenPaths = new Set();
+    const _trackMsg = (content) => {
+      const toolRe = /^[●✗⏺]\s+(Read|Write|Edit)\(([^)]*)\)\s*$/gm;
+      let m;
+      while ((m = toolRe.exec(content || "")) !== null) {
+        const rawPath = m[2].split(",")[0].trim().replace(/^["']|["']$/g, "");
+        if (rawPath && !_seenPaths.has(rawPath)) {
+          _seenPaths.add(rawPath);
+          const kind = /^Write$/i.test(m[1]) ? "write" : "read";
+          _previewPush(session.id, rawPath, kind);
+        }
+      }
+    };
     for (const m of session.messages || []) {
+      if (m.role === "assistant") _trackMsg(m.content);
       messages.appendChild(renderChatMessage(m, messages._regenCtx));
     }
     setTimeout(() => {
@@ -1273,6 +1307,22 @@
       }
     };
 
+    // Register file-tool paths in the preview LRU as they stream in.
+    const _registeredPaths = new Set();
+    const _trackFilePaths = (content) => {
+      const toolRe = /^[●✗⏺]\s+(Read|Write|Edit)\(([^)]*)\)\s*$/gm;
+      let m;
+      while ((m = toolRe.exec(content)) !== null) {
+        const toolName = m[1];
+        const rawPath = m[2].split(",")[0].trim().replace(/^["']|["']$/g, "");
+        if (rawPath && !_registeredPaths.has(rawPath)) {
+          _registeredPaths.add(rawPath);
+          const kind = /^Write$/i.test(toolName) ? "write" : "read";
+          _previewPush(session.id, rawPath, kind);
+        }
+      }
+    };
+
     const consumeChunk = (rawBlock) => {
       // rawBlock may contain id:, event:, data: lines (one event)
       const lines = rawBlock.split("\n");
@@ -1300,6 +1350,7 @@
       ]);
       if (!lifecycleEvents.has(eventType)) {
         handleSseEvent(rawBlock, assistant);
+        _trackFilePaths(assistant.content);
         renderBody();
         return;
       }
@@ -3269,6 +3320,345 @@
       tag.textContent = "○ offline";
       tag.style.color = "var(--error)";
     }
+  }
+
+  // ============================================================ File preview panel
+
+  // Per-session LRU registry tracking recent file accesses (max 20 entries).
+  // Each entry: { path, kind: "read"|"write" }
+  const _previewRegistry = {};
+
+  function _previewLruKey(sessionId) {
+    return `fcc:preview:lru:${sessionId}`;
+  }
+
+  function _previewLoadLru(sessionId) {
+    if (_previewRegistry[sessionId]) return _previewRegistry[sessionId];
+    try {
+      const raw = localStorage.getItem(_previewLruKey(sessionId));
+      _previewRegistry[sessionId] = raw ? JSON.parse(raw) : [];
+    } catch {
+      _previewRegistry[sessionId] = [];
+    }
+    return _previewRegistry[sessionId];
+  }
+
+  function _previewPush(sessionId, path, kind) {
+    if (!sessionId || !path) return;
+    const lru = _previewLoadLru(sessionId);
+    // Remove existing entry for same path, then prepend.
+    const idx = lru.findIndex((e) => e.path === path);
+    if (idx !== -1) lru.splice(idx, 1);
+    lru.unshift({ path, kind });
+    if (lru.length > 20) lru.length = 20;
+    try {
+      localStorage.setItem(_previewLruKey(sessionId), JSON.stringify(lru));
+    } catch {
+      /* storage full — ignore */
+    }
+  }
+
+  // Lazy Prism loader — only loads scripts on first preview open.
+  let _prismLoaded = false;
+  let _prismLoadPromise = null;
+
+  function _loadPrism() {
+    if (_prismLoaded) return Promise.resolve();
+    if (_prismLoadPromise) return _prismLoadPromise;
+    const base = "vendor/prism/";
+    const scripts = [
+      base + "prism.js",
+      base + "prism-python.min.js",
+      base + "prism-javascript.min.js",
+      base + "prism-typescript.min.js",
+      base + "prism-json.min.js",
+      base + "prism-yaml.min.js",
+      base + "prism-markup.min.js",
+      base + "prism-css.min.js",
+      base + "prism-sql.min.js",
+      base + "prism-rust.min.js",
+      base + "prism-go.min.js",
+      base + "prism-bash.min.js",
+      base + "prism-markdown.min.js",
+      base + "prism-line-numbers.min.js",
+    ];
+    _prismLoadPromise = scripts
+      .reduce((chain, src) => {
+        return chain.then(
+          () =>
+            new Promise((resolve, reject) => {
+              if (document.querySelector(`script[src="${src}"]`)) {
+                resolve();
+                return;
+              }
+              const s = document.createElement("script");
+              s.src = src;
+              s.onload = resolve;
+              s.onerror = resolve; // non-fatal — highlighting will degrade
+              document.head.appendChild(s);
+            })
+        );
+      }, Promise.resolve())
+      .then(() => {
+        _prismLoaded = true;
+      });
+    return _prismLoadPromise;
+  }
+
+  // Singleton panel reference — only one panel exists at a time.
+  let _previewPanel = null;
+  let _previewSessionId = null;
+  let _previewActiveTab = "current"; // "current" | "reads" | "writes"
+  let _previewCurrentPath = null;
+
+  function _getOrCreatePanel(sessionId) {
+    const chatMain = document.querySelector(".chat-main");
+    if (!chatMain) return null;
+
+    if (_previewPanel && _previewSessionId === sessionId) {
+      return _previewPanel;
+    }
+
+    // Build or re-parent the panel.
+    if (_previewPanel) {
+      _previewPanel.remove();
+      _previewPanel = null;
+    }
+
+    _previewSessionId = sessionId;
+
+    // Wrap messages + preview in a layout container if not already done.
+    let layout = chatMain.querySelector(".chat-layout");
+    if (!layout) {
+      const messages = chatMain.querySelector(".messages");
+      if (!messages) return null;
+      layout = el("div", { class: "chat-layout" });
+      messages.parentNode.insertBefore(layout, messages);
+      layout.appendChild(messages);
+    }
+
+    const panel = el("aside", { class: "preview" });
+
+    // Header row: close + path + lang badge + copy button.
+    const pathLabel = el("div", { class: "preview-path" }, "");
+    const langBadge = el("div", { class: "preview-lang-badge" }, "");
+    const copyBtn = el(
+      "button",
+      {
+        class: "btn btn-ghost btn-sm",
+        type: "button",
+        title: "Copy content",
+        onclick: () => {
+          const pre = panel.querySelector(".preview-body code");
+          const text = pre ? pre.textContent : "";
+          navigator.clipboard.writeText(text).catch(() => {});
+          copyBtn.textContent = "✓";
+          setTimeout(() => {
+            copyBtn.textContent = "copy";
+          }, 1200);
+        },
+      },
+      "copy"
+    );
+    const closeBtn = el(
+      "button",
+      {
+        class: "btn btn-ghost btn-sm",
+        type: "button",
+        title: "Close preview",
+        onclick: () => {
+          panel.classList.remove("preview-open");
+          setTimeout(() => panel.remove(), 160);
+          _previewPanel = null;
+        },
+      },
+      "✕"
+    );
+    const header = el(
+      "div",
+      { class: "preview-header" },
+      pathLabel,
+      langBadge,
+      copyBtn,
+      closeBtn
+    );
+    panel.appendChild(header);
+
+    // Tabs.
+    const tabs = el("div", { class: "preview-tabs" });
+    const makeTab = (id, label) => {
+      const btn = el(
+        "button",
+        {
+          class: "preview-tab" + (_previewActiveTab === id ? " active" : ""),
+          type: "button",
+          "data-tab": id,
+          onclick: () => {
+            _previewActiveTab = id;
+            $$(".preview-tab", panel).forEach((t) =>
+              t.classList.toggle("active", t.dataset.tab === id)
+            );
+            _renderPreviewTab(panel, sessionId, id, pathLabel, langBadge);
+          },
+        },
+        label
+      );
+      return btn;
+    };
+    tabs.appendChild(makeTab("current", "Current file"));
+    tabs.appendChild(makeTab("reads", "Recent reads"));
+    tabs.appendChild(makeTab("writes", "Recent writes"));
+    panel.appendChild(tabs);
+
+    const body = el("div", { class: "preview-body" });
+    panel.appendChild(body);
+
+    layout.appendChild(panel);
+    _previewPanel = panel;
+
+    // Slide in.
+    requestAnimationFrame(() => panel.classList.add("preview-open"));
+
+    return panel;
+  }
+
+  function _renderPreviewTab(panel, sessionId, tabId, pathLabel, langBadge) {
+    const body = panel.querySelector(".preview-body");
+    if (!body) return;
+
+    if (tabId === "current") {
+      if (_previewCurrentPath) {
+        _loadAndShowFile(panel, sessionId, _previewCurrentPath, pathLabel, langBadge);
+      } else {
+        body.innerHTML = "";
+        body.appendChild(el("div", { class: "preview-empty" }, "No file selected"));
+      }
+      return;
+    }
+
+    const lru = _previewLoadLru(sessionId);
+    const kind = tabId === "reads" ? "read" : "write";
+    const filtered = lru.filter((e) => e.kind === kind);
+
+    body.innerHTML = "";
+    if (filtered.length === 0) {
+      body.appendChild(
+        el("div", { class: "preview-empty" }, `No recent ${kind}s`)
+      );
+      return;
+    }
+
+    const list = el("ul", { class: "preview-list" });
+    filtered.forEach((entry) => {
+      const item = el(
+        "li",
+        {
+          class: "preview-list-item",
+          onclick: () => {
+            _previewCurrentPath = entry.path;
+            _previewActiveTab = "current";
+            $$(".preview-tab", panel).forEach((t) =>
+              t.classList.toggle("active", t.dataset.tab === "current")
+            );
+            _loadAndShowFile(panel, sessionId, entry.path, pathLabel, langBadge);
+          },
+        },
+        el("span", { class: "preview-item-kind" }, entry.kind === "read" ? "R" : "W"),
+        el("span", {}, entry.path.split("/").pop()),
+        el(
+          "span",
+          { class: "muted", style: "font-size:10px;margin-left:auto;" },
+          entry.path
+        )
+      );
+      list.appendChild(item);
+    });
+    body.appendChild(list);
+  }
+
+  async function _loadAndShowFile(panel, sessionId, path, pathLabel, langBadge) {
+    const body = panel.querySelector(".preview-body");
+    if (!body) return;
+
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "preview-loading" }, "Loading…"));
+
+    try {
+      await _loadPrism();
+    } catch {
+      /* non-fatal */
+    }
+
+    let data;
+    try {
+      data = await api(
+        `/v1/preview/file?path=${encodeURIComponent(path)}&session_id=${encodeURIComponent(sessionId || "")}`
+      );
+    } catch (err) {
+      body.innerHTML = "";
+      body.appendChild(
+        el(
+          "div",
+          { class: "preview-empty" },
+          `Cannot load file: ${err.message || err}`
+        )
+      );
+      return;
+    }
+
+    const lang = data.language || "plaintext";
+    pathLabel.textContent = path;
+    langBadge.textContent = lang;
+    langBadge.style.display = lang === "plaintext" ? "none" : "";
+
+    body.innerHTML = "";
+    const pre = el("pre", { class: `language-${lang} line-numbers` });
+    const code = el("code", { class: `language-${lang}` });
+    code.textContent = data.content || "";
+    pre.appendChild(code);
+    body.appendChild(pre);
+
+    // Highlight via Prism if available.
+    if (
+      typeof window !== "undefined" &&
+      window.Prism &&
+      typeof window.Prism.highlightElement === "function"
+    ) {
+      try {
+        window.Prism.highlightElement(code);
+        if (typeof window.Prism.plugins?.lineNumbers?.resize === "function") {
+          window.Prism.plugins.lineNumbers.resize(pre);
+        }
+      } catch {
+        /* non-fatal */
+      }
+    }
+  }
+
+  /**
+   * Open the preview panel for a given file path + session.
+   * Called by tool-block click handlers and the public surface.
+   */
+  function openPreviewPanel(path, sessionId) {
+    if (!path) return;
+    const panel = _getOrCreatePanel(sessionId || activeSessionId || "");
+    if (!panel) return;
+
+    _previewCurrentPath = path;
+    _previewActiveTab = "current";
+    $$(".preview-tab", panel).forEach((t) =>
+      t.classList.toggle("active", t.dataset.tab === "current")
+    );
+
+    const pathLabel = panel.querySelector(".preview-path");
+    const langBadge = panel.querySelector(".preview-lang-badge");
+    _loadAndShowFile(
+      panel,
+      sessionId || activeSessionId || "",
+      path,
+      pathLabel,
+      langBadge
+    );
   }
 
   // ============================================================ Boot

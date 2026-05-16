@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -170,6 +171,119 @@ async def delete_session_route(
 ) -> dict[str, Any]:
     datastore.delete_session(session_id)
     return {"ok": True}
+
+
+# ============================================================ Auto-rename
+
+
+_AUTO_RENAME_SYSTEM = (
+    "Summarize this exchange as a 3-6 word title. "
+    "Output the title only, no quotes, no punctuation."
+)
+_AUTO_RENAME_TIMEOUT_S = 10.0
+_AUTO_RENAME_MAX_CHARS = 60
+
+
+class AutoRenameIn(BaseModel):
+    first_user_message: str = Field(default="", max_length=4000)
+    first_assistant_message: str = Field(default="", max_length=4000)
+
+
+def _parse_auto_rename_title(raw: str) -> str:
+    """Strip whitespace, quotes, and punctuation; cap at 60 chars."""
+    title = raw.strip().strip("\"'`").strip()
+    # Remove trailing punctuation.
+    title = re.sub(r"[.!?,;:]+$", "", title).strip()
+    return title[:_AUTO_RENAME_MAX_CHARS]
+
+
+async def _call_rename_llm(
+    body: AutoRenameIn,
+    settings: Settings,
+    request: Request | None,
+) -> str:
+    """POST to /v1/messages and return the raw title text (or '' on failure)."""
+    base_url = settings.public_base_url.rstrip("/")
+    model = settings.model
+    auth_token = settings.anthropic_auth_token
+
+    messages = [
+        {"role": "user", "content": body.first_user_message[:600]},
+        {"role": "assistant", "content": body.first_assistant_message[:600]},
+        {
+            "role": "user",
+            "content": "Now give a 3-6 word title for the exchange above.",
+        },
+    ]
+    payload: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 40,
+        "stream": False,
+        "system": _AUTO_RENAME_SYSTEM,
+        "messages": messages,
+        "metadata": {"fcc_internal": "auto_rename"},
+    }
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+
+    try:
+        async with httpx.AsyncClient(timeout=_AUTO_RENAME_TIMEOUT_S) as client:
+            resp = await client.post(
+                f"{base_url}/v1/messages",
+                json=payload,
+                headers=headers,
+            )
+        if resp.status_code != 200:
+            return ""
+        data = resp.json()
+        # Anthropic-format: {"content": [{"type": "text", "text": "..."}], ...}
+        content = data.get("content") or []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return block.get("text") or ""
+        return ""
+    except Exception as exc:
+        logger.debug("auto_rename: LLM call failed: {}", exc)
+        return ""
+
+
+@dashboard_router.post("/v1/sessions/{session_id}/auto-rename")
+async def auto_rename_session(
+    session_id: str,
+    body: AutoRenameIn,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Generate a short title for a session using the configured chat provider.
+
+    Calls ``/v1/messages`` directly via httpx (no agent loop, no tools).
+    Persists the result via ``datastore.upsert_session`` and returns ``{title}``.
+    Returns an empty title string when the LLM call fails — the client should
+    fall back to its derived title.
+    """
+    session = datastore.get_session(session_id)
+    if session is None:
+        raise HTTPException(404, "session not found")
+
+    raw = await _call_rename_llm(body, settings, request)
+    title = _parse_auto_rename_title(raw)
+
+    if title:
+        datastore.upsert_session(
+            session_id=session_id,
+            title=title,
+            model=session.get("model") or "",
+            project_id=session.get("project_id"),
+        )
+        logger.debug(
+            "auto_rename: session={} title={!r}",
+            session_id,
+            title,
+        )
+
+    return {"title": title}
 
 
 class MessageIn(BaseModel):

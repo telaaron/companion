@@ -411,8 +411,9 @@
     load(currentPath);
   }
 
-  // Async session rename — calls a one-shot, non-streaming completion to ask
-  // the model for a 4-word title summary. Falls back silently on any error.
+  // Async session rename — POSTs to /v1/sessions/{id}/auto-rename which calls
+  // the configured provider server-side (single round-trip, no tools).
+  // Falls back to the derived title from the first user message on any error.
   // Skips work if the current title was already user-edited (not derived).
   async function maybeRenameSessionAsync(session, assistantReply) {
     if (!session || !session.id) return;
@@ -423,48 +424,60 @@
       current.length > 50 ||
       current.endsWith("…");
     if (!wasDerived) return;
+
+    // Resolve first user message for the rename payload.
+    let firstUserMsg = "";
     try {
       const fresh = await loadSessionDetail(session.id);
       const msgs = fresh.messages || [];
       const firstUser = msgs.find((m) => m.role === "user");
-      if (!firstUser) return;
-      const prompt =
-        "Give a 3-6 word title for this conversation. ONLY the title, no quotes, no punctuation.\n\n" +
-        `USER: ${firstUser.content.slice(0, 600)}\n\n` +
-        `ASSISTANT: ${(assistantReply || "").slice(0, 600)}`;
+      if (firstUser) firstUserMsg = firstUser.content || "";
+    } catch {
+      /* ignore — proceed with empty first user msg */
+    }
+
+    const _doRename = async () => {
       const headers = { "Content-Type": "application/json" };
       if (AUTH) headers.Authorization = `Bearer ${AUTH}`;
-      const response = await fetch("/v1/messages", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          model: session.model || "deepseek/deepseek-v4-flash",
-          max_tokens: 40,
-          stream: false,
-          messages: [{ role: "user", content: prompt }],
-          metadata: { fcc_internal: "title_rename" },
-        }),
-      });
-      if (!response.ok) return;
-      const body = await response.text();
-      // Server may stream even with stream:false depending on provider; pull
-      // first text chunk we can find.
-      const m = body.match(/"text":\s*"([^"]+)"/);
-      let title = m ? m[1] : "";
-      title = title.replace(/[\n"'`]/g, "").trim();
-      if (title && title.length >= 3 && title.length <= 80) {
-        session.title = title;
-        await updateSession(session.id, {
-          title,
-          model: session.model || "",
-          project_id: session.project_id || null,
-        });
-        const titleEl = document.querySelector(".chat-title");
-        if (titleEl) titleEl.textContent = title;
-        void loadSessions();
-      }
-    } catch {
-      /* silent — derived title from first message is fine fallback */
+      const response = await fetch(
+        `/v1/sessions/${encodeURIComponent(session.id)}/auto-rename`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            first_user_message: firstUserMsg.slice(0, 600),
+            first_assistant_message: (assistantReply || "").slice(0, 600),
+          }),
+        }
+      );
+      if (!response.ok) return "";
+      const data = await response.json();
+      return (data.title || "").trim();
+    };
+
+    const _applyTitle = (title) => {
+      if (!title || title.length < 3) return false;
+      session.title = title;
+      const titleEl = document.querySelector(".chat-title");
+      if (titleEl) titleEl.textContent = title;
+      void loadSessions();
+      return true;
+    };
+
+    try {
+      let title = await _doRename();
+      if (_applyTitle(title)) return;
+
+      // First attempt returned falsy/unparseable — retry once after 3 s.
+      console.log("auto-rename: first attempt returned empty title, retrying in 3 s…");
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      title = await _doRename();
+      if (_applyTitle(title)) return;
+
+      // Both attempts failed — fall back to derived title from first user msg.
+      console.log("auto-rename: both attempts failed, using derived fallback");
+    } catch (err) {
+      console.warn("auto-rename failed:", err);
     }
   }
 

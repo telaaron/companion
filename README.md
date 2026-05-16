@@ -40,8 +40,8 @@ Requires **macOS or Linux**, **Python 3.14**, and **[uv](https://github.com/astr
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Clone + install
-git clone https://github.com/telaaron/free-claude-code.git
-cd free-claude-code
+git clone https://github.com/telaaron/companion.git
+cd companion
 uv python install 3.14 && uv sync
 
 # 3. Start the server

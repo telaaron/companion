@@ -847,17 +847,16 @@
       )
     );
 
-    // Model select — combine upstream-discovered + Claude defaults.
-    const modelOptions = [
-      "claude-3-5-sonnet-20241022",
-      "claude-3-opus-20240229",
-      "claude-3-5-haiku-20241022",
-    ];
+    // Model select — only provider-discovered models. No hardcoded Claude
+    // ids (they require an upstream key most users don't have).
+    const modelOptions = [];
     for (const p of upstreamModels.providers || []) {
       for (const m of p.models || []) {
         modelOptions.push(`${p.provider}/${m}`);
       }
     }
+    const defaultModel =
+      session.model || modelOptions[0] || "deepseek/deepseek-v4-flash";
     const modelSelect = el(
       "select",
       {
@@ -873,7 +872,7 @@
       ...modelOptions.map((m) =>
         el(
           "option",
-          { value: m, selected: m === (session.model || "claude-3-5-sonnet-20241022") },
+          { value: m, selected: m === defaultModel },
           m
         )
       )

@@ -25,6 +25,7 @@ from typing import Any
 from loguru import logger
 
 from api import datastore
+from api.agent import notifier
 from api.agent.agent_loop_streaming import run_agent_streaming
 from api.agent.global_rate_limit import configure as configure_global_tool_limiter
 from api.agent.workspace_resolver import parse_bash_denylist, resolve_workspace
@@ -174,6 +175,7 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             session_id=session_id,
             project_id=project_id,
         )
+        await _maybe_notify(job_id, settings)
     except asyncio.CancelledError:
         datastore.mark_agent_job_status(job_id, "cancelled")
         datastore.append_agent_job_event(
@@ -206,6 +208,7 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             session_id=session_id,
             project_id=project_id,
         )
+        await _maybe_notify(job_id, settings)
 
 
 _SUMMABLE_USAGE_KEYS = frozenset(
@@ -300,6 +303,23 @@ def _build_messages_request(payload: dict[str, Any]) -> MessagesRequest:
         system=payload.get("system"),
         metadata=payload.get("metadata") or None,
     )
+
+
+async def _maybe_notify(job_id: str, settings: Settings) -> None:
+    """Fire the job notifier when configured and the job was long enough."""
+    if not settings.slack_webhook_url and not settings.discord_webhook_url:
+        return
+    job = datastore.get_agent_job(job_id)
+    if not job:
+        return
+    started = job.get("started_at")
+    finished = job.get("finished_at")
+    if started is None or finished is None:
+        return
+    duration_s = (finished - started) / 1000.0
+    if duration_s < settings.notifier_min_seconds:
+        return
+    await notifier.notify(job_id)
 
 
 def cancel_job(job_id: str) -> bool:

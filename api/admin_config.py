@@ -107,6 +107,11 @@ SECTIONS: tuple[ConfigSectionSpec, ...] = (
         "Server-side multi-turn loop with local Read/Write/Edit/Bash/Glob/Grep/LS tools (Phase B).",
     ),
     ConfigSectionSpec(
+        "notifier",
+        "Job Notifier",
+        "Slack and Discord webhooks for long-running job completion alerts.",
+    ),
+    ConfigSectionSpec(
         "diagnostics",
         "Diagnostics",
         "Logging and debugging flags.",
@@ -697,6 +702,41 @@ FIELDS: tuple[ConfigFieldSpec, ...] = (
             "the safe defaults. Credential-named vars (TOKEN/SECRET/etc.) "
             "remain blocked."
         ),
+    ),
+    ConfigFieldSpec(
+        "SLACK_WEBHOOK_URL",
+        "Slack Webhook URL",
+        "notifier",
+        "secret",
+        settings_attr="slack_webhook_url",
+        secret=True,
+        description="Incoming Webhook URL for Slack job-completion notifications.",
+    ),
+    ConfigFieldSpec(
+        "DISCORD_WEBHOOK_URL",
+        "Discord Webhook URL",
+        "notifier",
+        "secret",
+        settings_attr="discord_webhook_url",
+        secret=True,
+        description="Webhook URL for Discord job-completion notifications.",
+    ),
+    ConfigFieldSpec(
+        "NOTIFIER_MIN_SECONDS",
+        "Notifier Min Seconds",
+        "notifier",
+        "number",
+        settings_attr="notifier_min_seconds",
+        default="30",
+        description="Minimum job duration (seconds) before a notification fires.",
+    ),
+    ConfigFieldSpec(
+        "PUBLIC_BASE_URL",
+        "Public Base URL",
+        "notifier",
+        settings_attr="public_base_url",
+        default="http://127.0.0.1:8082",
+        description="Base URL for deep-link chat URLs in webhook notifications.",
     ),
     ConfigFieldSpec(
         "DEBUG_PLATFORM_EDITS",

@@ -355,6 +355,30 @@ class Settings(BaseSettings):
         validation_alias="AGENT_BASH_EXTRA_ENV",
     )
 
+    # ==================== Job Notifier (Slack / Discord webhooks) ====================
+    # When set, a POST is sent to the webhook URL when a long-running agent job
+    # finishes (status "done" or "error"). Never fires on "cancelled".
+    slack_webhook_url: str | None = Field(
+        default=None,
+        validation_alias="SLACK_WEBHOOK_URL",
+        description="Incoming Webhook URL for Slack job-completion notifications.",
+    )
+    discord_webhook_url: str | None = Field(
+        default=None,
+        validation_alias="DISCORD_WEBHOOK_URL",
+        description="Webhook URL for Discord job-completion notifications.",
+    )
+    notifier_min_seconds: int = Field(
+        default=30,
+        validation_alias="NOTIFIER_MIN_SECONDS",
+        description="Minimum job duration (seconds) before a webhook notification fires.",
+    )
+    public_base_url: str = Field(
+        default="http://127.0.0.1:8082",
+        validation_alias="PUBLIC_BASE_URL",
+        description="Base URL used in deep-link chat URLs sent via webhook notifications.",
+    )
+
     # ==================== Debug / diagnostic logging (avoid sensitive content) ====================
     # When false (default), API and SSE helpers log only metadata (counts, lengths, ids).
     log_raw_api_payloads: bool = Field(
@@ -444,6 +468,8 @@ class Settings(BaseSettings):
         "allowed_telegram_user_id",
         "discord_bot_token",
         "allowed_discord_channels",
+        "slack_webhook_url",
+        "discord_webhook_url",
         "model_opus",
         "model_sonnet",
         "model_haiku",

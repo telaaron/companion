@@ -131,7 +131,7 @@ async def test_single_turn_no_tool_returns_text(tmp_path: Path) -> None:
     run = await run_agent_to_completion(
         _make_request(),
         provider,
-        Workspace.create(tmp_path),  # type: ignore[arg-type]
+        Workspace.create(tmp_path),
     )
     assert run.turns == 1
     assert run.halted_reason == "end_turn"
@@ -151,7 +151,7 @@ async def test_tool_use_turn_executes_then_continues(tmp_path: Path) -> None:
     run = await run_agent_to_completion(
         _make_request(),
         provider,
-        Workspace.create(tmp_path),  # type: ignore[arg-type]
+        Workspace.create(tmp_path),
     )
     assert run.turns == 2
     assert run.halted_reason == "end_turn"
@@ -171,7 +171,7 @@ async def test_tool_error_continues_loop(tmp_path: Path) -> None:
     run = await run_agent_to_completion(
         _make_request(),
         provider,
-        Workspace.create(tmp_path),  # type: ignore[arg-type]
+        Workspace.create(tmp_path),
     )
     assert run.turns == 2
     assert run.invocations[0].result.is_error
@@ -189,7 +189,7 @@ async def test_unknown_tool_returns_error_block(tmp_path: Path) -> None:
     run = await run_agent_to_completion(
         _make_request(),
         provider,
-        Workspace.create(tmp_path),  # type: ignore[arg-type]
+        Workspace.create(tmp_path),
     )
     assert run.invocations[0].result.is_error
     assert "unknown tool" in run.invocations[0].result.content
@@ -203,7 +203,7 @@ async def test_max_turns_cap_enforced(tmp_path: Path) -> None:
     run = await run_agent_to_completion(
         _make_request(),
         provider,
-        Workspace.create(tmp_path),  # type: ignore[arg-type]
+        Workspace.create(tmp_path),
         max_turns=3,
     )
     assert run.turns == 3
@@ -218,7 +218,7 @@ async def test_request_tools_are_augmented_with_local_tools(tmp_path: Path) -> N
     await run_agent_to_completion(
         request,
         provider,
-        Workspace.create(tmp_path),  # type: ignore[arg-type]
+        Workspace.create(tmp_path),
     )
     sent = provider.calls[0]
     tool_names = {t.name for t in (sent.tools or [])}
@@ -237,7 +237,7 @@ async def test_tool_use_appends_assistant_and_user_messages(tmp_path: Path) -> N
     await run_agent_to_completion(
         _make_request(),
         provider,
-        Workspace.create(tmp_path),  # type: ignore[arg-type]
+        Workspace.create(tmp_path),
     )
     second_request = provider.calls[1]
     msgs = second_request.messages

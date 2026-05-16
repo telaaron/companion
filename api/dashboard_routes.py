@@ -9,6 +9,7 @@ the global proxy rate limiter (single-user assumption).
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -957,6 +958,110 @@ async def stream_job_events(
             "Connection": "keep-alive",
         },
     )
+
+
+# ============================================================ Provider test
+
+
+_PROVIDER_TEST_TIMEOUT_S = 5.0
+_PROVIDER_TEST_MESSAGES = [{"role": "user", "content": "hi"}]
+
+
+@dashboard_router.post("/v1/providers/{provider_id}/test")
+async def test_provider(
+    provider_id: str,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Send a minimal 1-token completion to ``provider_id`` and report timing.
+
+    Returns ``{ok, duration_ms, echo_model, error}`` — never HTTP 500.
+    Wraps every exception so the UI always gets a JSON payload.
+    """
+    from api.dependencies import resolve_provider
+    from providers.exceptions import UnknownProviderTypeError
+
+    t0 = time.monotonic()
+
+    try:
+        provider = resolve_provider(provider_id, app=request.app, settings=settings)
+    except UnknownProviderTypeError:
+        return {
+            "ok": False,
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "echo_model": None,
+            "error": f"unknown provider: {provider_id}",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "echo_model": None,
+            "error": str(exc),
+        }
+
+    # Build a minimal Anthropic-shaped request object the provider can accept.
+    class _MinimalRequest:
+        messages = _PROVIDER_TEST_MESSAGES
+        max_tokens = 16
+        system = None
+        tools = None
+        temperature = None
+        top_p = None
+        top_k = None
+        metadata = None
+        stop_sequences = None
+        model = ""
+        stream = True
+        thinking = None
+        tool_choice = None
+
+    try:
+        echo_model: str | None = None
+        chunks: list[str] = []
+
+        async def _run() -> None:
+            nonlocal echo_model
+            async for chunk in provider.stream_response(
+                _MinimalRequest(), request_id="provider-test"
+            ):
+                chunks.append(chunk)
+                # Extract the echoed model from the first message_start event.
+                if echo_model is None and '"message_start"' in chunk:
+                    import json as _json
+
+                    for line in chunk.splitlines():
+                        if line.startswith("data:"):
+                            try:
+                                evt = _json.loads(line[5:])
+                                echo_model = evt.get("message", {}).get("model") or None
+                            except Exception:
+                                pass
+
+        await asyncio.wait_for(_run(), timeout=_PROVIDER_TEST_TIMEOUT_S)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        return {
+            "ok": True,
+            "duration_ms": duration_ms,
+            "echo_model": echo_model,
+            "error": None,
+        }
+
+    except TimeoutError:
+        return {
+            "ok": False,
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "echo_model": None,
+            "error": "timed out after 5 s",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "echo_model": None,
+            "error": str(exc),
+        }
 
 
 # ============================================================ File preview

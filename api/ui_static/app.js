@@ -2722,6 +2722,71 @@
       )
     );
 
+    // Provider test-connection cards
+    try {
+      const upstreamData = await api("/v1/models/upstream");
+      const providerIds = (upstreamData.providers || []).map((p) => p.provider);
+      // Also include providers from configured refs that may not have cached models yet.
+      const configuredProviderIds = (upstreamData.configured || []).map((c) => c.provider);
+      const allProviderIds = [...new Set([...providerIds, ...configuredProviderIds])];
+      if (allProviderIds.length > 0) {
+        const providerGrid = el("div", { class: "grid-cards" });
+        allProviderIds.sort().forEach((pid) => {
+          const card = el("div", { class: "card" });
+          card.appendChild(el("div", { class: "card-title" }, pid));
+
+          // Status pill element — shared between button and pill views.
+          const statusEl = el("span", { class: "pill", style: { display: "none" } });
+
+          const testBtn = el(
+            "button",
+            {
+              class: "btn btn-ghost btn-sm",
+              type: "button",
+              onclick: async () => {
+                testBtn.disabled = true;
+                testBtn.textContent = "Testing…";
+                statusEl.style.display = "none";
+                try {
+                  const result = await api(`/v1/providers/${encodeURIComponent(pid)}/test`, {
+                    method: "POST",
+                  });
+                  if (result.ok) {
+                    statusEl.className = "pill pill-ok";
+                    statusEl.textContent = `✓ ${result.duration_ms} ms`;
+                  } else {
+                    const errText = (result.error || "failed").slice(0, 80);
+                    statusEl.className = "pill pill-error";
+                    statusEl.textContent = `✗ ${errText}`;
+                  }
+                } catch (e) {
+                  statusEl.className = "pill pill-error";
+                  statusEl.textContent = `✗ ${String(e.message || e).slice(0, 80)}`;
+                }
+                testBtn.textContent = "Test connection";
+                testBtn.disabled = false;
+                statusEl.style.display = "";
+                // Auto-fade the status pill after 8 s.
+                setTimeout(() => {
+                  statusEl.style.display = "none";
+                }, 8000);
+              },
+            },
+            "Test connection"
+          );
+
+          card.appendChild(
+            el("div", { class: "row gap-2 align-center", style: { marginTop: "8px" } }, testBtn, statusEl)
+          );
+          providerGrid.appendChild(card);
+        });
+        body.appendChild(el("div", { class: "card-title", style: { marginTop: "16px" } }, "Provider connections"));
+        body.appendChild(providerGrid);
+      }
+    } catch (e) {
+      console.warn("provider list load failed", e);
+    }
+
     // Pricing card
     const pricing = await api("/v1/pricing").catch(() => null);
     if (pricing) {

@@ -2593,51 +2593,177 @@
       }
     }
 
-    // ---------- Skills section
-    const skillsSection = el("section", { class: "skills-section" });
-    skillsSection.appendChild(
+    // ---------- Installed skills section (marketplace)
+    const installedSection = el("section", { class: "skills-section" });
+    installedSection.appendChild(
       el(
         "div",
         { class: "section-heading" },
-        el("h3", {}, "Skills"),
-        el("span", { class: "muted fs-12" }, "SKILL.md files in your Claude install")
+        el("h3", {}, "Installed skills"),
+        el("span", { class: "muted fs-12" }, "skills/ directory in this repo")
       )
     );
-    const data = await api("/v1/skills").catch(() => ({ skills: [], search_paths: [] }));
-    if (!data.skills?.length) {
-      skillsSection.appendChild(
+    const localData = await api("/v1/skills/local").catch(() => ({ skills: [] }));
+    if (!localData.skills?.length) {
+      installedSection.appendChild(
         el(
           "div",
           { class: "empty" },
           el("div", { class: "empty-icon" }, "★"),
-          el("div", { class: "empty-title" }, "No skills found"),
+          el("div", { class: "empty-title" }, "No skills installed"),
+          el("div", { class: "empty-sub" }, "Browse the catalog below and click Install")
+        )
+      );
+    } else {
+      const grid = el("div", { class: "grid-cards" });
+      for (const s of localData.skills) {
+        const card = el(
+          "article",
+          { class: "card" },
+          el("div", { class: "card-title" }, s.name),
+          el("div", { class: "card-sub" }, s.description || "no description"),
+          el("div", { class: "muted truncate", style: { fontSize: "11px" } }, s.entry),
+          el(
+            "div",
+            { class: "mcp-card-actions" },
+            el(
+              "button",
+              {
+                class: "btn btn-sm btn-ghost",
+                onclick: async () => {
+                  if (!confirm(`Uninstall skill "${s.slug}"? This removes the skills/${s.slug} folder.`)) return;
+                  try {
+                    await api(`/v1/skills/local/${encodeURIComponent(s.slug)}`, { method: "DELETE" });
+                    toastShow(`Skill "${s.slug}" uninstalled`, "ok");
+                    setTimeout(renderSkills, 400);
+                  } catch (e) {
+                    toastShow(`Uninstall failed: ${e.message}`, "error");
+                  }
+                },
+              },
+              "Uninstall"
+            )
+          )
+        );
+        grid.appendChild(card);
+      }
+      installedSection.appendChild(grid);
+    }
+    body.appendChild(installedSection);
+
+    // ---------- Legacy skills section (from ~/.claude)
+    const legacySection = el("section", { class: "skills-section" });
+    legacySection.appendChild(
+      el(
+        "div",
+        { class: "section-heading" },
+        el("h3", {}, "Claude skills (legacy)"),
+        el("span", { class: "muted fs-12" }, "SKILL.md files in your Claude install")
+      )
+    );
+    const legacyData = await api("/v1/skills").catch(() => ({ skills: [], search_paths: [] }));
+    if (!legacyData.skills?.length) {
+      legacySection.appendChild(
+        el(
+          "div",
+          { class: "empty" },
+          el("div", { class: "empty-icon" }, "📦"),
+          el("div", { class: "empty-title" }, "No legacy skills found"),
           el(
             "div",
             { class: "empty-sub" },
-            "Searched: " + (data.search_paths || []).join(", ")
+            "Searched: " + (legacyData.search_paths || []).join(", ")
           )
         )
       );
     } else {
       const grid = el("div", { class: "grid-cards" });
-      for (const s of data.skills) {
+      for (const s of legacyData.skills) {
         grid.appendChild(
           el(
             "div",
             { class: "card" },
             el("div", { class: "card-title" }, s.name),
             el("div", { class: "card-sub" }, s.description || "no description"),
-            el(
-              "div",
-              { class: "muted truncate", style: { fontSize: "11px" } },
-              s.path
-            )
+            el("div", { class: "muted truncate", style: { fontSize: "11px" } }, s.path)
           )
         );
       }
-      skillsSection.appendChild(grid);
+      legacySection.appendChild(grid);
     }
-    body.appendChild(skillsSection);
+    body.appendChild(legacySection);
+
+    // ---------- Remote catalog section
+    const catalogSection = el("section", { class: "skills-section" });
+    catalogSection.appendChild(
+      el(
+        "div",
+        { class: "section-heading" },
+        el("h3", {}, "Skill catalog"),
+        el("span", { class: "muted fs-12" }, "Set SKILLS_CATALOG_URL to enable remote browsing")
+      )
+    );
+    const catalogData = await api("/v1/skills/catalog").catch(() => ({ skills: [], source: null }));
+    if (!catalogData.skills?.length) {
+      catalogSection.appendChild(
+        el(
+          "div",
+          { class: "empty" },
+          el("div", { class: "empty-icon" }, "🌐"),
+          el("div", { class: "empty-title" }, "No catalog available"),
+          el(
+            "div",
+            { class: "empty-sub" },
+            catalogData.source
+              ? "Catalog at " + catalogData.source + " returned no skills"
+              : "Configure SKILLS_CATALOG_URL to browse installable skills"
+          )
+        )
+      );
+    } else {
+      const installedSlugs = new Set((localData.skills || []).map((s) => s.slug));
+      const grid = el("div", { class: "grid-cards" });
+      for (const s of catalogData.skills) {
+        const alreadyInstalled = installedSlugs.has(s.slug);
+        const installBtn = el(
+          "button",
+          {
+            class: "btn btn-sm" + (alreadyInstalled ? " btn-ghost" : ""),
+            disabled: alreadyInstalled || undefined,
+            onclick: async () => {
+              if (
+                !confirm(
+                  `Install "${s.name || s.slug}"?\n\nThis will download and execute code from:\n${s.tarball_url || s.url || catalogData.source}\n\nContinue?`
+                )
+              )
+                return;
+              installBtn.disabled = true;
+              installBtn.textContent = "Installing…";
+              try {
+                await api(`/v1/skills/install/${encodeURIComponent(s.slug)}`, { method: "POST" });
+                toastShow(`Skill "${s.slug}" installed`, "ok");
+                setTimeout(renderSkills, 600);
+              } catch (e) {
+                toastShow(`Install failed: ${e.message}`, "error");
+                installBtn.disabled = false;
+                installBtn.textContent = "Install";
+              }
+            },
+          },
+          alreadyInstalled ? "Installed" : "Install"
+        );
+        const card = el(
+          "article",
+          { class: "card" },
+          el("div", { class: "card-title" }, s.name || s.slug),
+          el("div", { class: "card-sub" }, s.description || ""),
+          el("div", { class: "mcp-card-actions" }, installBtn)
+        );
+        grid.appendChild(card);
+      }
+      catalogSection.appendChild(grid);
+    }
+    body.appendChild(catalogSection);
   }
 
   // ============================================================ Settings view

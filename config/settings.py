@@ -355,6 +355,18 @@ class Settings(BaseSettings):
         validation_alias="AGENT_BASH_EXTRA_ENV",
     )
 
+    # ==================== Skill marketplace ====================
+    # URL to a remote catalog index.json. ``None`` or empty string disables
+    # remote catalog fetching; ``GET /v1/skills/catalog`` will return ``{skills: []}``.
+    skills_catalog_url: str | None = Field(
+        default=None,
+        validation_alias="SKILLS_CATALOG_URL",
+        description=(
+            "URL of the remote skills catalog index.json. "
+            "None/empty disables catalog. Default: None."
+        ),
+    )
+
     # ==================== Memory / RAG indexer ====================
     # Comma-separated absolute paths to scan and watch for file indexing.
     # Empty string ⇒ indexer is disabled.
@@ -491,6 +503,7 @@ class Settings(BaseSettings):
         "allowed_discord_channels",
         "slack_webhook_url",
         "discord_webhook_url",
+        "skills_catalog_url",
         "model_opus",
         "model_sonnet",
         "model_haiku",

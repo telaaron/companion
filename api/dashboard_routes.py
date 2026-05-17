@@ -10,8 +10,11 @@ the global proxy rate limiter (single-user assumption).
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import re
+import tarfile
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -629,6 +632,236 @@ def _scan_skills() -> list[dict[str, Any]]:
 @dashboard_router.get("/v1/skills")
 async def skills_route(_auth=Depends(require_api_key)) -> dict[str, Any]:
     return {"skills": _scan_skills(), "search_paths": [str(p) for p in _SKILL_DIRS]}
+
+
+# ============================================================ Skill marketplace (new)
+
+# Repo-root skills dir (two levels up from api/dashboard_routes.py)
+_REPO_SKILLS_ROOT = Path(__file__).resolve().parents[1] / "skills"
+
+# Catalog cache: (fetched_at_epoch, payload)
+_catalog_cache: tuple[float, dict[str, Any]] | None = None
+_CATALOG_CACHE_TTL_S = 24 * 60 * 60  # 24 hours
+_CATALOG_FETCH_TIMEOUT_S = 10.0
+
+
+def _local_skills_list() -> list[dict[str, Any]]:
+    """Return installed skills from the repo-root ``skills/`` directory."""
+    from api.agent.extras.skills import scan_skills
+
+    skills = scan_skills(_REPO_SKILLS_ROOT)
+    return [
+        {
+            "name": s.name,
+            "slug": s.slug,
+            "description": s.description,
+            "entry": s.entry,
+            "path": str(s.path),
+        }
+        for s in skills
+    ]
+
+
+@dashboard_router.get("/v1/skills/local")
+async def skills_local_route(_auth=Depends(require_api_key)) -> dict[str, Any]:
+    """Return skills installed in the repo-root ``skills/`` directory."""
+    return {"skills": _local_skills_list()}
+
+
+async def _fetch_catalog(catalog_url: str) -> dict[str, Any]:
+    """Fetch and return the remote catalog JSON, or empty on failure."""
+    global _catalog_cache
+
+    now = time.time()
+    if _catalog_cache is not None:
+        fetched_at, payload = _catalog_cache
+        if now - fetched_at < _CATALOG_CACHE_TTL_S:
+            return payload
+
+    try:
+        async with httpx.AsyncClient(timeout=_CATALOG_FETCH_TIMEOUT_S) as client:
+            resp = await client.get(catalog_url)
+        if resp.status_code != 200:
+            logger.warning(
+                "SKILLS: catalog fetch returned HTTP {} from {}",
+                resp.status_code,
+                catalog_url,
+            )
+            return {"skills": []}
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            payload = {"skills": []}
+        _catalog_cache = (now, payload)
+        return payload
+    except Exception as exc:
+        logger.warning("SKILLS: catalog fetch failed ({}): {}", catalog_url, exc)
+        return {"skills": []}
+
+
+@dashboard_router.get("/v1/skills/catalog")
+async def skills_catalog_route(
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return the remote skills catalog, cached 24 h on disk.
+
+    Returns ``{skills: []}`` when ``SKILLS_CATALOG_URL`` is not configured
+    or the remote is unreachable.
+    """
+    catalog_url = settings.skills_catalog_url
+    if not catalog_url:
+        return {"skills": [], "source": None}
+
+    payload = await _fetch_catalog(catalog_url)
+    payload["source"] = catalog_url
+    return payload
+
+
+def _validate_tar_path(member_name: str, slug: str) -> bool:
+    """Return True if the tar member path stays within ``skills/{slug}/``."""
+    # Normalise to forward slashes
+    norm = member_name.replace("\\", "/").lstrip("/")
+    # Must start with slug/ (or be slug itself)
+    prefix = slug + "/"
+    if norm == slug:
+        return True
+    if not norm.startswith(prefix):
+        return False
+    # Reject any traversal segments
+    rest = norm[len(prefix) :]
+    return all(part not in ("", ".", "..") for part in rest.split("/"))
+
+
+@dashboard_router.post("/v1/skills/install/{slug}")
+async def install_skill(
+    slug: str,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Download and extract a skill tarball from the catalog.
+
+    The request body may supply ``{"url": "..."}`` to override the download
+    URL; otherwise the catalog entry for ``slug`` is used.
+
+    Security
+    --------
+    - ``slug`` must be a safe identifier (alphanumeric + hyphens/underscores).
+    - Every tar member is validated to stay within ``skills/{slug}/``.
+    - Path-traversal attempts cause a 400 error.
+    """
+    # Validate slug shape
+    if not re.match(r"^[a-zA-Z0-9_-]+$", slug):
+        raise HTTPException(400, f"invalid slug: {slug!r}")
+
+    # Determine download URL
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    download_url: str | None = body.get("url") or None
+
+    if not download_url:
+        catalog_url = settings.skills_catalog_url
+        if not catalog_url:
+            raise HTTPException(
+                400, "SKILLS_CATALOG_URL not configured and no 'url' provided in body"
+            )
+        catalog = await _fetch_catalog(catalog_url)
+        entries = catalog.get("skills") or []
+        entry = next((e for e in entries if e.get("slug") == slug), None)
+        if entry is None:
+            raise HTTPException(404, f"skill {slug!r} not found in catalog")
+        download_url = entry.get("tarball_url") or entry.get("url")
+        if not download_url:
+            raise HTTPException(502, f"catalog entry for {slug!r} has no download URL")
+
+    # Download the tarball
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(download_url)
+        if resp.status_code != 200:
+            raise HTTPException(
+                502, f"download failed with HTTP {resp.status_code} from {download_url}"
+            )
+        tarball_bytes = resp.content
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"download error: {exc}") from exc
+
+    # Extract into a temp dir, validate all member paths, then move to skills/
+    dest_dir = _REPO_SKILLS_ROOT / slug
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            try:
+                with tarfile.open(fileobj=io.BytesIO(tarball_bytes), mode="r:gz") as tf:
+                    # Validate every member before extracting
+                    for member in tf.getmembers():
+                        if not _validate_tar_path(member.name, slug):
+                            raise HTTPException(
+                                400,
+                                f"tar member {member.name!r} escapes skill directory",
+                            )
+                    tf.extractall(tmp_path)
+            except tarfile.TarError as exc:
+                raise HTTPException(400, f"invalid tarball: {exc}") from exc
+
+            # Move extracted content to skills/ root
+            extracted_skill = tmp_path / slug
+            if not extracted_skill.is_dir():
+                # Tarball may have been flat (no top-level slug/ folder)
+                extracted_skill = tmp_path
+
+            import shutil
+
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(str(extracted_skill), str(dest_dir))
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"install failed: {exc}") from exc
+
+    datastore.record_audit(
+        category="skills",
+        event="install",
+        detail=slug,
+        metadata={"url": download_url},
+    )
+    logger.info("SKILLS: installed slug={} from {}", slug, download_url)
+    return {"ok": True, "slug": slug, "path": str(dest_dir)}
+
+
+@dashboard_router.delete("/v1/skills/local/{slug}")
+async def uninstall_skill(
+    slug: str,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Remove an installed skill from ``skills/{slug}``."""
+    if not re.match(r"^[a-zA-Z0-9_-]+$", slug):
+        raise HTTPException(400, f"invalid slug: {slug!r}")
+
+    import shutil
+
+    dest_dir = _REPO_SKILLS_ROOT / slug
+    if not dest_dir.is_dir():
+        raise HTTPException(404, f"skill {slug!r} not installed")
+
+    # Verify the target resolves inside _REPO_SKILLS_ROOT (extra safety)
+    try:
+        dest_dir.resolve().relative_to(_REPO_SKILLS_ROOT.resolve())
+    except ValueError as exc:
+        raise HTTPException(400, "path traversal detected") from exc
+
+    shutil.rmtree(dest_dir)
+    datastore.record_audit(category="skills", event="uninstall", detail=slug)
+    logger.info("SKILLS: uninstalled slug={}", slug)
+    return {"ok": True, "slug": slug}
 
 
 # ============================================================ Models discovery

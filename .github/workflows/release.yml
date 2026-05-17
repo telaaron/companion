@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-python-binary:
+    name: Python binary — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: companion-bin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: companion-bin.exe
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: companion-bin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Install PyOxidizer
+        run: pip install pyoxidizer
+
+      - name: Build Python binary
+        working-directory: packaging
+        run: pyoxidizer build --release
+
+      - name: Locate binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p packaging/dist
+          cp packaging/build/*/release/install/companion-bin packaging/dist/companion-bin
+
+      - name: Locate binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force packaging/dist
+          Copy-Item (Get-ChildItem -Recurse packaging/build -Filter companion-bin.exe | Select-Object -First 1).FullName packaging/dist/companion-bin.exe
+
+      - name: Upload Python binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-binary-${{ matrix.target }}
+          path: packaging/dist/${{ matrix.artifact }}
+          retention-days: 1
+
+  build-tauri:
+    name: Tauri — ${{ matrix.os }}
+    needs: build-python-binary
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            python-artifact: companion-bin
+            bundle-ext: dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            python-artifact: companion-bin.exe
+            bundle-ext: exe
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            python-artifact: companion-bin
+            bundle-ext: AppImage
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tauri/src-tauri -> target"
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Download Python binary
+        uses: actions/download-artifact@v4
+        with:
+          name: python-binary-${{ matrix.target }}
+          path: packaging/dist
+
+      - name: Make binary executable (Unix)
+        if: runner.os != 'Windows'
+        run: chmod +x packaging/dist/companion-bin
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build Tauri app
+        working-directory: tauri
+        run: cargo tauri build --target ${{ matrix.target }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+          APPLE_SIGNING_IDENTITY: ""
+
+      - name: Upload Tauri bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Companion-${{ github.ref_name }}-${{ matrix.target }}
+          path: |
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.${{ matrix.bundle-ext }}
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build-tauri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "Companion-*"
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Companion ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          generate_release_notes: true
+          files: dist/**/*
+          body: |
+            ## Companion ${{ github.ref_name }}
+
+            ### Installation
+
+            See [docs/installing.md](https://github.com/telaaron/companion/blob/main/docs/installing.md) for full instructions.
+
+            | Platform | Download |
+            |----------|---------|
+            | macOS (Apple Silicon) | `Companion-*-aarch64-apple-darwin.dmg` |
+            | Windows (x86-64) | `Companion-*-x86_64-pc-windows-msvc.exe` |
+            | Linux (x86-64) | `Companion-*-x86_64-unknown-linux-gnu.AppImage` |
+
+            > **macOS note:** The app is not codesigned in this release. You may need to right-click → Open on first launch to bypass Gatekeeper. See [docs/installing.md](https://github.com/telaaron/companion/blob/main/docs/installing.md) for details.

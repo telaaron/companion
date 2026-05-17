@@ -1,5 +1,10 @@
 __pycache__
 .claude
+# Tauri / Rust build artefacts
+tauri/src-tauri/target/
+# PyOxidizer build artefacts (the dist binary is committed by CI via artifact upload)
+packaging/build/
+packaging/dist/
 .cursor
 .pytest_cache
 .ruff_cache

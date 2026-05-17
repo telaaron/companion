@@ -169,26 +169,20 @@ class AppRuntime:
 
     async def _start_indexer_if_configured(self) -> None:
         """Start the RAG file indexer when MEMORY_INDEX_PATHS is configured."""
-        paths_str = (
-            getattr(self.settings, "memory_index_paths", None) or ""
-        ).strip()
+        paths_str = (getattr(self.settings, "memory_index_paths", None) or "").strip()
         if not paths_str:
             return
         paths: list[str] = [p.strip() for p in paths_str.split(",") if p.strip()]
         if not paths:
             return
 
-        exts_str = (
-            getattr(self.settings, "memory_index_exts", None) or ""
-        ).strip()
+        exts_str = (getattr(self.settings, "memory_index_exts", None) or "").strip()
         allowed_exts = (
             frozenset(e.strip() for e in exts_str.split(",") if e.strip())
             if exts_str
             else None
         )
-        max_bytes: int = getattr(
-            self.settings, "memory_index_max_bytes", 500_000_000
-        )
+        max_bytes: int = getattr(self.settings, "memory_index_max_bytes", 500_000_000)
 
         try:
             from api.agent.indexer import Indexer

@@ -355,6 +355,20 @@ class Settings(BaseSettings):
         validation_alias="AGENT_BASH_EXTRA_ENV",
     )
 
+    # ==================== Multi-user (light) ====================
+    # CSV of ``token=user_id`` pairs that map Bearer tokens to user buckets.
+    # Example: ``abc123=alice,def456=bob``.
+    # When empty, no token-to-user mapping is performed and all traffic falls
+    # back to the ``"default"`` bucket.
+    companion_users: str = Field(
+        default="",
+        validation_alias="COMPANION_USERS",
+        description=(
+            "CSV of token=user_id pairs. "
+            "Maps Bearer tokens to multi-user buckets. Empty = single-user mode."
+        ),
+    )
+
     # ==================== Skill marketplace ====================
     # URL to a remote catalog index.json. ``None`` or empty string disables
     # remote catalog fetching; ``GET /v1/skills/catalog`` will return ``{skills: []}``.

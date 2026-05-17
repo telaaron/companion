@@ -1,6 +1,7 @@
 """Dependency injection for FastAPI."""
 
 import secrets
+from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
 from loguru import logger
@@ -142,3 +143,57 @@ async def cleanup_provider():
     await ProviderRegistry(_providers).cleanup()
     _providers = {}
     logger.debug("Provider cleanup completed")
+
+
+def _parse_companion_users(companion_users_csv: str) -> dict[str, str]:
+    """Parse COMPANION_USERS CSV (``token=user_id,...``) into a mapping dict.
+
+    Invalid entries (no ``=`` sign, empty token or user) are silently skipped.
+    """
+    mapping: dict[str, str] = {}
+    for part in companion_users_csv.split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        token, _, user = part.partition("=")
+        token = token.strip()
+        user = user.strip()
+        if token and user:
+            mapping[token] = user
+    return mapping
+
+
+def get_current_user_id(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> str:
+    """Derive the caller's user_id from the request.
+
+    Resolution order:
+    1. ``x-companion-user`` header (explicit override — highest priority).
+    2. Bearer token → user_id lookup via ``Settings.companion_users`` CSV.
+    3. Fall back to ``"default"`` (single-user mode, backward-compatible).
+    """
+    # 1. Explicit header
+    header_user = request.headers.get("x-companion-user", "").strip()
+    if header_user:
+        return header_user
+
+    # 2. Bearer token → user lookup
+    companion_users_csv = (settings.companion_users or "").strip()
+    if companion_users_csv:
+        token_map = _parse_companion_users(companion_users_csv)
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            bearer = auth_header.split(" ", 1)[1].strip()
+            # Strip any trailing ":model" appended by some clients.
+            if bearer and ":" in bearer:
+                bearer = bearer.split(":", 1)[0]
+            if bearer and bearer in token_map:
+                return token_map[bearer]
+
+    return "default"
+
+
+# Convenience type alias for use in route signatures.
+CurrentUserId = Annotated[str, Depends(get_current_user_id)]

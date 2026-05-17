@@ -28,7 +28,7 @@ from config.settings import Settings
 from providers.registry import ProviderRegistry
 
 from . import datastore
-from .dependencies import get_settings, require_api_key
+from .dependencies import CurrentUserId, get_settings, require_api_key
 from .pricing import known_image_prices, known_token_prices, pricing_snapshot
 
 dashboard_router = APIRouter()
@@ -51,6 +51,22 @@ _SECRET_KEY_HINTS = (
 )
 
 
+# ============================================================ Identity
+
+
+@dashboard_router.get("/v1/me")
+async def me_route(
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return the caller's resolved user_id.
+
+    Useful for the UI to display the active user and detect whether
+    multi-user mode is in effect (``user_id != "default"``).
+    """
+    return {"user_id": user_id}
+
+
 # ============================================================ Projects
 
 
@@ -63,13 +79,18 @@ class ProjectIn(BaseModel):
 
 
 @dashboard_router.get("/v1/projects")
-async def list_projects(_auth=Depends(require_api_key)) -> dict[str, Any]:
-    return {"projects": datastore.list_projects()}
+async def list_projects(
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    return {"projects": datastore.list_projects(user_id=user_id)}
 
 
 @dashboard_router.post("/v1/projects")
 async def create_project(
-    body: ProjectIn, _auth=Depends(require_api_key)
+    body: ProjectIn,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
     return datastore.upsert_project(
         name=body.name,
@@ -77,6 +98,7 @@ async def create_project(
         shared_context=body.shared_context,
         color=body.color,
         workspace_path=body.workspace_path,
+        user_id=user_id,
     )
 
 
@@ -123,17 +145,21 @@ class SessionIn(BaseModel):
 
 @dashboard_router.get("/v1/sessions")
 async def list_sessions_route(
-    project_id: str | None = None, _auth=Depends(require_api_key)
+    user_id: CurrentUserId,
+    project_id: str | None = None,
+    _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
-    return {"sessions": datastore.list_sessions(project_id=project_id)}
+    return {"sessions": datastore.list_sessions(project_id=project_id, user_id=user_id)}
 
 
 @dashboard_router.post("/v1/sessions")
 async def create_session_route(
-    body: SessionIn, _auth=Depends(require_api_key)
+    body: SessionIn,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
     return datastore.upsert_session(
-        title=body.title, model=body.model, project_id=body.project_id
+        title=body.title, model=body.model, project_id=body.project_id, user_id=user_id
     )
 
 
@@ -372,13 +398,14 @@ async def file_edits_route(
 
 @dashboard_router.get("/v1/audit")
 async def audit_route(
+    user_id: CurrentUserId,
     category: str | None = None,
     limit: int = 200,
     _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
     return {
         "events": datastore.list_audit(
-            category=category, limit=max(1, min(limit, 1000))
+            category=category, limit=max(1, min(limit, 1000)), user_id=user_id
         )
     }
 
@@ -1092,6 +1119,7 @@ async def start_session_job(
     session_id: str,
     body: AgentJobIn,
     request: Request,
+    user_id: CurrentUserId,
     _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
     """Kick off a background agent run for ``session_id``. Returns immediately."""
@@ -1123,6 +1151,7 @@ async def start_session_job(
         max_tokens=body.max_tokens,
         provider_getter=_provider_getter,
         metadata=metadata,
+        user_id=user_id,
     )
     return job
 

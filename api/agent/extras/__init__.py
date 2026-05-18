@@ -10,6 +10,7 @@ from __future__ import annotations
 from core.tools.registry import ToolSpec, register_extras
 
 from . import env_set as env_set_executor
+from . import preferences as preferences_executor
 from . import projects as projects_executor
 from . import search as search_executor
 from . import skills as skills_executor
@@ -143,6 +144,71 @@ _ENV_SET = ToolSpec(
 )
 
 
+_PREFERENCE_SET = ToolSpec(
+    name="PreferenceSet",
+    description=(
+        "Record or update a long-term user preference. The preference is "
+        "written to a persistent file and prepended to every future system "
+        "prompt so it survives across sessions. "
+        "Call this whenever the user expresses a durable behavioural rule "
+        "(e.g. 'always answer in German', 'always ask before deleting files'). "
+        "After calling, summarise in one sentence what was recorded."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": (
+                    "Short identifier for the preference (max 200 chars), "
+                    "e.g. 'language' or 'confirm_before_delete'."
+                ),
+            },
+            "value": {
+                "type": "string",
+                "description": (
+                    "The preference rule (max 200 chars), "
+                    "e.g. 'Always respond in German'."
+                ),
+            },
+        },
+        "required": ["key", "value"],
+    },
+    executor=preferences_executor.execute_set,
+)
+
+
+_PREFERENCE_DELETE = ToolSpec(
+    name="PreferenceDelete",
+    description=(
+        "Delete a previously recorded preference by key. "
+        "Use when the user says they no longer want a rule to apply."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "The preference key to remove (max 200 chars).",
+            },
+        },
+        "required": ["key"],
+    },
+    executor=preferences_executor.execute_delete,
+)
+
+
+_PREFERENCE_LIST = ToolSpec(
+    name="PreferenceList",
+    description=(
+        "List all currently recorded long-term preferences. "
+        "Use to show the user what rules are currently active."
+    ),
+    input_schema={"type": "object", "properties": {}, "required": []},
+    executor=preferences_executor.execute_list,
+)
+
+
 _SKILL_LIST = ToolSpec(
     name="SkillList",
     description=(
@@ -189,6 +255,9 @@ register_extras(
         _SEARCH,
         _SKILL_LIST,
         _SKILL_RUN,
+        _PREFERENCE_SET,
+        _PREFERENCE_DELETE,
+        _PREFERENCE_LIST,
     ]
 )
 

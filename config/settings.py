@@ -475,6 +475,15 @@ class Settings(BaseSettings):
     # ==================== NIM Settings ====================
     nim: NimSettings = Field(default_factory=NimSettings)
 
+    # ==================== Self-modification (preferences) ====================
+    # Markdown file prepended to every agent system prompt as long-term prefs.
+    # Env-only: not settable from chat. Default: ~/.config/free-claude-code/preferences.md
+    preferences_path: str = Field(
+        default=str(Path.home() / ".config" / "free-claude-code" / "preferences.md"),
+        validation_alias="PREFERENCES_PATH",
+        description="Path to the long-term user preferences Markdown file.",
+    )
+
     # ==================== Voice Note Transcription ====================
     voice_note_enabled: bool = Field(
         default=True, validation_alias="VOICE_NOTE_ENABLED"

@@ -3163,6 +3163,55 @@
       console.warn("provider list load failed", e);
     }
 
+    // Preferences card
+    try {
+      const prefsData = await api("/v1/preferences");
+      const prefsCard = el("div", { class: "card" });
+      prefsCard.appendChild(el("div", { class: "card-title" }, "Long-term preferences"));
+      const prefsList = el("div");
+      prefsCard.appendChild(prefsList);
+
+      function renderPrefsList(entries) {
+        prefsList.innerHTML = "";
+        if (!entries || entries.length === 0) {
+          prefsList.appendChild(
+            el("div", { class: "muted", style: { fontSize: "0.85rem", marginTop: "8px" } },
+              "No preferences recorded — the agent will write here when you say " +
+              "\"always…\" or \"never…\" in chat.")
+          );
+          return;
+        }
+        entries.forEach((pref) => {
+          const row = el("div", { class: "row gap-2 align-center", style: { marginTop: "6px" } });
+          row.appendChild(
+            el("span", { class: "mono", style: { flex: "1", fontSize: "0.85rem" } },
+              `${pref.key}: ${pref.value}`)
+          );
+          const delBtn = el("button", {
+            class: "btn btn-ghost btn-sm",
+            type: "button",
+            onclick: async () => {
+              if (!confirm(`Delete preference "${pref.key}"?`)) return;
+              try {
+                await api(`/v1/preferences/${encodeURIComponent(pref.key)}`, { method: "DELETE" });
+                const updated = await api("/v1/preferences");
+                renderPrefsList(updated.preferences || []);
+              } catch (e) {
+                alert("Delete failed: " + (e.message || e));
+              }
+            },
+          }, "Delete");
+          row.appendChild(delBtn);
+          prefsList.appendChild(row);
+        });
+      }
+
+      renderPrefsList(prefsData.preferences || []);
+      body.appendChild(prefsCard);
+    } catch (e) {
+      console.warn("preferences load failed", e);
+    }
+
     // Pricing card
     const pricing = await api("/v1/pricing").catch(() => null);
     if (pricing) {

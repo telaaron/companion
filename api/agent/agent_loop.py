@@ -386,6 +386,11 @@ _IDENTITY_PROMPT_TEMPLATE = (
     "* **Self-management tools**: ProjectList / ProjectCreate / ProjectUpdate / "
     "ProjectDelete (manage the user's projects), EnvSet (rotate env vars + "
     "hot-reload), Search (FTS5 across past chat turns + indexed memory).\n"
+    "* **Preference tools**: PreferenceSet / PreferenceDelete / PreferenceList. "
+    "When the user expresses a long-term preference (e.g. 'always ask before "
+    "deleting files', 'always answer in German'), call PreferenceSet to record "
+    "it immediately. Always summarise what you recorded in one short sentence. "
+    "When the user revokes a preference, call PreferenceDelete.\n"
     "* **Cloud CLIs via Bash** when tokens are configured: `gh` (GitHub), "
     "`vercel` (Vercel), `supabase` (Supabase). Env vars in your shell: "
     "GITHUB_TOKEN, VERCEL_TOKEN, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, "
@@ -403,9 +408,18 @@ _IDENTITY_PROMPT_TEMPLATE = (
 
 
 def build_identity_prompt(model: str, workspace: str) -> str:
-    return _IDENTITY_PROMPT_TEMPLATE.format(
+    base = _IDENTITY_PROMPT_TEMPLATE.format(
         model=model or "unknown", workspace=workspace or "(cwd)"
     )
+    try:
+        from api.agent.extras.preferences import load_prefs_text
+
+        prefs_text = load_prefs_text()
+        if prefs_text:
+            return base + "\n\n" + prefs_text
+    except Exception:
+        pass
+    return base
 
 
 def _build_request_for_turn(

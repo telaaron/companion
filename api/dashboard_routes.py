@@ -718,6 +718,35 @@ async def env_delete(key: str, _auth=Depends(require_api_key)) -> dict[str, Any]
     return {"ok": True}
 
 
+# ============================================================ Preferences
+
+
+@dashboard_router.get("/v1/preferences")
+async def list_preferences(_auth=Depends(require_api_key)) -> dict[str, Any]:
+    """Return all long-term user preferences from the prefs file."""
+    from api.agent.extras.preferences import _load_prefs, _prefs_path
+
+    path = _prefs_path()
+    prefs = _load_prefs(path)
+    entries = [{"key": k, "value": v} for k, v in prefs.items()]
+    return {"preferences": entries, "path": str(path)}
+
+
+@dashboard_router.delete("/v1/preferences/{key}")
+async def delete_preference(key: str, _auth=Depends(require_api_key)) -> dict[str, Any]:
+    """Delete a single preference by key."""
+    from api.agent.extras.preferences import _load_prefs, _prefs_path, _save_prefs
+
+    path = _prefs_path()
+    prefs = _load_prefs(path)
+    if key not in prefs:
+        return {"ok": True, "found": False}
+    del prefs[key]
+    _save_prefs(path, prefs)
+    datastore.record_audit(category="preferences", event="delete", detail=key)
+    return {"ok": True, "found": True}
+
+
 # ============================================================ Root files
 
 

@@ -475,6 +475,21 @@ class Settings(BaseSettings):
     # Hugging Face token for faster model downloads (optional, for local Whisper)
     hf_token: str = Field(default="", validation_alias="HF_TOKEN")
 
+    # ==================== Voice Mode (hold-spacebar / TTS) ====================
+    # Absolute path to the whisper.cpp binary.  When empty the transcribe endpoint
+    # falls back to the nvidia_nim route (if WHISPER_DEVICE=nvidia_nim) or returns
+    # a 503.  Example: /usr/local/bin/whisper-cpp
+    whisper_binary: str = Field(default="", validation_alias="WHISPER_BINARY")
+    # TTS provider: "mac_say" (default, zero-cost) | "elevenlabs" | "none"
+    tts_provider: str = Field(default="mac_say", validation_alias="TTS_PROVIDER")
+    # ElevenLabs credentials — only required when tts_provider="elevenlabs".
+    elevenlabs_api_key: str = Field(default="", validation_alias="ELEVENLABS_API_KEY")
+    elevenlabs_voice_id: str = Field(
+        default="21m00Tcm4TlvDq8ikWAM", validation_alias="ELEVENLABS_VOICE_ID"
+    )
+    # When true, the UI auto-submits the transcribed text without a manual send.
+    voice_auto_send: bool = Field(default=False, validation_alias="VOICE_AUTO_SEND")
+
     # ==================== Bot Wrapper Config ====================
     telegram_bot_token: str | None = None
     allowed_telegram_user_id: str | None = None
@@ -545,6 +560,15 @@ class Settings(BaseSettings):
         if v not in ("cpu", "cuda", "nvidia_nim"):
             raise ValueError(
                 f"whisper_device must be 'cpu', 'cuda', or 'nvidia_nim', got {v!r}"
+            )
+        return v
+
+    @field_validator("tts_provider")
+    @classmethod
+    def validate_tts_provider(cls, v: str) -> str:
+        if v not in ("mac_say", "elevenlabs", "none"):
+            raise ValueError(
+                f"tts_provider must be 'mac_say', 'elevenlabs', or 'none', got {v!r}"
             )
         return v
 

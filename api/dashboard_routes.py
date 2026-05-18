@@ -13,6 +13,7 @@ import asyncio
 import io
 import os
 import re
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -20,7 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import Response
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -429,6 +431,27 @@ async def pricing_route(_auth=Depends(require_api_key)) -> dict[str, Any]:
         "token_prices": known_token_prices(),
         "image_prices": known_image_prices(),
     }
+
+
+# ============================================================ Insights
+
+
+@dashboard_router.get("/v1/insights")
+async def insights_route(
+    user_id: CurrentUserId,
+    range: str = "7d",
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return rule-based insights over audit_log + usage_events.
+
+    Results are cached for 5 minutes per ``(range, user_id)`` pair.
+    Supported ``range`` values: ``1h``, ``24h``, ``7d`` (default), ``30d``, ``all``.
+    """
+    from api.agent.insights import compute_insights
+
+    since_ts = _since_ts(range)
+    data = compute_insights(since_ts=since_ts, user_id=user_id)
+    return {"range": range, "since_ts": since_ts, **data}
 
 
 # ============================================================ File edits / audit
@@ -1521,3 +1544,273 @@ async def index_rescan(
 
     asyncio.create_task(_run())
     return {"ok": True}
+
+
+# ============================================================ Voice mode
+
+
+_ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+_ELEVENLABS_TIMEOUT_S = 30.0
+_WHISPER_CPP_TIMEOUT_S = 60.0
+
+# NIM ASR base URL
+_NIM_ASR_BASE_URL = "https://integrate.api.nvidia.com/v1/audio/transcriptions"
+_NIM_ASR_TIMEOUT_S = 60.0
+
+
+async def _transcribe_via_whisper_cpp(
+    audio_bytes: bytes,
+    binary: str,
+    model: str,
+) -> dict[str, Any]:
+    """Run ``whisper.cpp`` in a subprocess and return ``{text, duration_ms}``.
+
+    The audio bytes are written to a temp file; whisper.cpp reads it and
+    emits the transcript on stdout.  We pass ``--output-json`` so the output
+    is machine-readable.
+    """
+    t0 = time.monotonic()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [
+                    binary,
+                    "-m",
+                    model,
+                    "-f",
+                    tmp_path,
+                    "--output-json",
+                    "--no-timestamps",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=_WHISPER_CPP_TIMEOUT_S,
+            ),
+        )
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        if result.returncode != 0:
+            logger.warning(
+                "VOICE: whisper.cpp exited {} stderr={}",
+                result.returncode,
+                result.stderr[:200],
+            )
+            raise HTTPException(500, "whisper.cpp transcription failed")
+
+        # whisper.cpp --output-json writes a JSON file next to the input.
+        # When it also echoes JSON to stdout, parse from there first.
+        import json as _json
+
+        stdout = result.stdout.strip()
+        text = ""
+        if stdout:
+            try:
+                data = _json.loads(stdout)
+                # JSON format: {"transcription": [{"text": "..."}]}
+                segs = data.get("transcription") or []
+                text = " ".join(s.get("text", "") for s in segs).strip()
+            except _json.JSONDecodeError:
+                # Fallback: plain text output
+                text = stdout.strip()
+
+        # Also check for a sidecar .json file
+        if not text:
+            sidecar = Path(tmp_path).with_suffix(".wav.json")
+            if sidecar.is_file():
+                try:
+                    data = _json.loads(sidecar.read_text())
+                    segs = data.get("transcription") or []
+                    text = " ".join(s.get("text", "") for s in segs).strip()
+                except Exception:
+                    pass
+                finally:
+                    sidecar.unlink(missing_ok=True)
+
+        return {"text": text, "duration_ms": duration_ms}
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+async def _transcribe_via_nim(
+    audio_bytes: bytes,
+    model: str,
+    api_key: str,
+) -> dict[str, Any]:
+    """POST audio to NVIDIA NIM ASR endpoint and return ``{text, duration_ms}``."""
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=_NIM_ASR_TIMEOUT_S) as client:
+            resp = await client.post(
+                _NIM_ASR_BASE_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": ("audio.wav", audio_bytes, "audio/wav")},
+                data={"model": model},
+            )
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        if resp.status_code != 200:
+            logger.warning("VOICE: NIM ASR returned HTTP {}", resp.status_code)
+            raise HTTPException(502, "NIM transcription endpoint error")
+        data = resp.json()
+        text = data.get("text") or ""
+        return {"text": text, "duration_ms": duration_ms}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"NIM transcription failed: {exc}") from exc
+
+
+@dashboard_router.post("/v1/transcribe")
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Transcribe an uploaded audio blob.
+
+    Accepts any audio format supported by the configured backend (typically
+    webm/opus from the browser MediaRecorder API).
+
+    Routing:
+    - ``WHISPER_BINARY`` set → whisper.cpp subprocess
+    - ``WHISPER_DEVICE=nvidia_nim`` → NVIDIA NIM ASR endpoint
+    - Otherwise → HTTP 503 (voice mode not configured)
+
+    Returns ``{text: str, duration_ms: int}``.
+    """
+    if not settings.voice_note_enabled:
+        raise HTTPException(503, "voice mode is disabled (VOICE_NOTE_ENABLED=false)")
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(400, "empty audio upload")
+
+    whisper_binary = settings.whisper_binary.strip()
+    if whisper_binary:
+        return await _transcribe_via_whisper_cpp(
+            audio_bytes,
+            binary=whisper_binary,
+            model=settings.whisper_model,
+        )
+
+    if settings.whisper_device == "nvidia_nim":
+        api_key = settings.nvidia_nim_api_key.strip()
+        return await _transcribe_via_nim(
+            audio_bytes,
+            model=settings.whisper_model,
+            api_key=api_key,
+        )
+
+    raise HTTPException(
+        503,
+        "Voice transcription not configured. "
+        "Set WHISPER_BINARY (path to whisper.cpp) or WHISPER_DEVICE=nvidia_nim.",
+    )
+
+
+class TtsIn(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    voice: str = Field(default="", max_length=200)
+
+
+@dashboard_router.post("/v1/tts")
+async def text_to_speech(
+    body: TtsIn,
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> Response:
+    """Convert text to speech audio.
+
+    Provider selection via ``TTS_PROVIDER`` setting:
+    - ``mac_say``  — macOS ``say`` command (zero-cost, returns AIFF audio)
+    - ``elevenlabs`` — ElevenLabs API (mp3 audio, per-character billed)
+    - ``none`` → HTTP 503
+
+    Returns raw audio bytes with the appropriate Content-Type.
+    """
+    provider = settings.tts_provider
+    text = body.text.strip()
+
+    if not text:
+        raise HTTPException(400, "text is required")
+
+    if provider == "none":
+        raise HTTPException(503, "TTS is disabled (TTS_PROVIDER=none)")
+
+    if provider == "mac_say":
+        return await _tts_mac_say(text, voice=body.voice or "")
+
+    if provider == "elevenlabs":
+        return await _tts_elevenlabs(
+            text,
+            voice_id=body.voice or settings.elevenlabs_voice_id,
+            api_key=settings.elevenlabs_api_key,
+        )
+
+    raise HTTPException(503, f"Unknown TTS provider: {provider!r}")
+
+
+async def _tts_mac_say(text: str, voice: str) -> Response:
+    """Synthesize speech via macOS ``say`` and return AIFF bytes."""
+    with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as tmp:
+        out_path = tmp.name
+
+    cmd = ["say", "-o", out_path]
+    if voice:
+        cmd += ["-v", voice]
+    cmd.append(text)
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=30,
+            ),
+        )
+        if result.returncode != 0:
+            raise HTTPException(
+                500,
+                f"say command failed (exit {result.returncode}): "
+                + result.stderr.decode(errors="replace")[:200],
+            )
+        audio_bytes = Path(out_path).read_bytes()
+        return Response(content=audio_bytes, media_type="audio/aiff")
+    finally:
+        Path(out_path).unlink(missing_ok=True)
+
+
+async def _tts_elevenlabs(text: str, voice_id: str, api_key: str) -> Response:
+    """POST to ElevenLabs TTS API and return mp3 bytes."""
+    if not api_key:
+        raise HTTPException(503, "ELEVENLABS_API_KEY is not configured")
+    url = _ELEVENLABS_TTS_URL.format(voice_id=voice_id)
+    try:
+        async with httpx.AsyncClient(timeout=_ELEVENLABS_TIMEOUT_S) as client:
+            resp = await client.post(
+                url,
+                headers={
+                    "xi-api-key": api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": text,
+                    "model_id": "eleven_monolingual_v1",
+                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+                },
+            )
+        if resp.status_code != 200:
+            raise HTTPException(
+                502,
+                f"ElevenLabs API returned HTTP {resp.status_code}",
+            )
+        return Response(content=resp.content, media_type="audio/mpeg")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"ElevenLabs TTS failed: {exc}") from exc

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.companion.server.plist
+  ==========================
+  launchd service for the macOS (Mac mini) home-lab recipe.
+
+  Install:
+    cp com.companion.server.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.companion.server.plist
+
+  Verify:
+    launchctl list | grep companion
+    tail -f /tmp/companion-server.log
+
+  Uninstall:
+    launchctl unload -w ~/Library/LaunchAgents/com.companion.server.plist
+    rm ~/Library/LaunchAgents/com.companion.server.plist
+-->
+<plist version="1.0">
+<dict>
+    <!-- Label must match the filename (without .plist) -->
+    <key>Label</key>
+    <string>com.companion.server</string>
+
+    <!-- Command to run — adjust WorkingDirectory if you cloned elsewhere -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/uv</string>
+        <string>run</string>
+        <string>fcc-server</string>
+    </array>
+
+    <!-- Working directory where the repo was cloned -->
+    <key>WorkingDirectory</key>
+    <string>/opt/companion</string>
+
+    <!-- Restart automatically if the process exits -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Start at login (RunAtLoad) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Environment variables — mirror your .env file here -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ANTHROPIC_AUTH_TOKEN</key>
+        <string>REPLACE_WITH_YOUR_TOKEN</string>
+        <!-- Add provider keys as needed, e.g.:
+        <key>OPENAI_API_KEY</key>
+        <string>sk-...</string>
+        -->
+        <key>FCC_HOST</key>
+        <string>0.0.0.0</string>
+        <key>FCC_PORT</key>
+        <string>8082</string>
+        <!-- Tailscale is installed natively on macOS, so the server binds
+             0.0.0.0 and Tailscale advertises the tailnet IP automatically. -->
+    </dict>
+
+    <!-- Log stdout / stderr to a file for easy debugging -->
+    <key>StandardOutPath</key>
+    <string>/tmp/companion-server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/companion-server.error.log</string>
+
+    <!-- Throttle rapid restarts to avoid a crash loop -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

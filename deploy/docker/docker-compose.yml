@@ -1,0 +1,45 @@
+services:
+  companion:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    # No explicit ports: — Tailscale owns the network interface.
+    # Traffic reaches Companion via the Tailscale IP on port 8082.
+    networks:
+      - tailnet
+    volumes:
+      - companion-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    restart: unless-stopped
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_HOSTNAME=companion
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_EXTRA_ARGS=--advertise-tags=tag:companion
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      # Expose the TUN device from the host
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    # Companion shares this container's network namespace so Tailscale
+    # handles all ingress — Companion itself needs no published ports.
+    network_mode: service:companion
+
+networks:
+  tailnet: {}
+
+volumes:
+  companion-data: {}
+  tailscale-state: {}

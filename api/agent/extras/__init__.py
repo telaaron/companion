@@ -12,6 +12,7 @@ from core.tools.registry import ToolSpec, register_extras
 from . import env_set as env_set_executor
 from . import projects as projects_executor
 from . import search as search_executor
+from . import skills as skills_executor
 
 _PROJECT_LIST = ToolSpec(
     name="ProjectList",
@@ -142,6 +143,42 @@ _ENV_SET = ToolSpec(
 )
 
 
+_SKILL_LIST = ToolSpec(
+    name="SkillList",
+    description=(
+        "List all installed skills. Returns name, description, entry script, "
+        "and version for each skill in the skills/ directory."
+    ),
+    input_schema={"type": "object", "properties": {}, "required": []},
+    executor=skills_executor.execute_skill_list,
+)
+
+
+_SKILL_RUN = ToolSpec(
+    name="SkillRun",
+    description=(
+        "Run an installed skill by name. The skill's entry script is executed "
+        "as a Python subprocess with the supplied args dict passed as JSON on stdin. "
+        "Returns stdout on success, or stderr on failure. 60-second timeout."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "The skill name (matches the folder name in skills/).",
+            },
+            "args": {
+                "type": "object",
+                "description": "Arguments dict passed to the skill as JSON on stdin.",
+            },
+        },
+        "required": ["name"],
+    },
+    executor=skills_executor.execute_skill_run,
+)
+
+
 register_extras(
     [
         _PROJECT_LIST,
@@ -150,6 +187,8 @@ register_extras(
         _PROJECT_DELETE,
         _ENV_SET,
         _SEARCH,
+        _SKILL_LIST,
+        _SKILL_RUN,
     ]
 )
 

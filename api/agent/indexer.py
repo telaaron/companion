@@ -272,12 +272,10 @@ class Indexer:
                     return
                 if self._lp.is_closed():
                     return
-                try:
+                with contextlib.suppress(RuntimeError):
                     self._lp.call_soon_threadsafe(
                         lambda: self._q.put_nowait((action, path))
                     )
-                except RuntimeError:
-                    pass
 
             def on_modified(self, event: FileSystemEvent) -> None:
                 if not event.is_directory:

@@ -355,6 +355,21 @@ class Settings(BaseSettings):
         validation_alias="AGENT_BASH_EXTRA_ENV",
     )
 
+    # ==================== Skill Marketplace ====================
+    # URL of the remote skill catalog index.json.
+    # When None or unreachable, GET /v1/skills/catalog returns {skills: []}.
+    skills_catalog_url: str | None = Field(
+        default=None,
+        validation_alias="SKILLS_CATALOG_URL",
+        description="URL of the remote skill catalog index.json (None = disabled).",
+    )
+    # Directory where installed skills are stored (repo-root ``skills/`` by default).
+    skills_dir: str = Field(
+        default="",
+        validation_alias="SKILLS_DIR",
+        description="Absolute path to the skills directory. Empty = auto-detect.",
+    )
+
     # ==================== Memory / RAG indexer ====================
     # Comma-separated absolute paths to scan and watch for file indexing.
     # Empty string ⇒ indexer is disabled.
@@ -491,6 +506,7 @@ class Settings(BaseSettings):
         "allowed_discord_channels",
         "slack_webhook_url",
         "discord_webhook_url",
+        "skills_catalog_url",
         "model_opus",
         "model_sonnet",
         "model_haiku",

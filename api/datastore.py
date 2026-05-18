@@ -43,6 +43,9 @@ def _connect():
         conn.close()
 
 
+_SCHEMA_VERSION = 3  # bump when adding new migrations below
+
+
 def init_schema() -> None:
     """Create tables if they don't exist. Idempotent."""
     global _INIT_DONE
@@ -177,9 +180,27 @@ def init_schema() -> None:
                     ts UNINDEXED,
                     tokenize='porter unicode61'
                 );
+
+                CREATE TABLE IF NOT EXISTS project_memories (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id)
+                        ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    source_session_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT 'default'
+                );
+                CREATE INDEX IF NOT EXISTS idx_project_memories_project
+                    ON project_memories(project_id);
+                CREATE INDEX IF NOT EXISTS idx_project_memories_project_created
+                    ON project_memories(project_id, created_at DESC);
                 """
             )
-            # Lightweight column migrations: older DBs may predate later fields.
+            # ----------------------------------------------------------
+            # Lightweight column migrations: older DBs may predate later
+            # fields. Each ALTER TABLE is wrapped in contextlib.suppress
+            # so it silently no-ops on databases that already have the
+            # column. This block is idempotent by design.
             import contextlib
 
             for column_sql in (
@@ -187,6 +208,69 @@ def init_schema() -> None:
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(column_sql)
+
+            # ----------------------------------------------------------
+            # Version-gated migrations (PRAGMA user_version).
+            # Each version block is a no-op when the DB is already at or
+            # above the target version.
+            row = conn.execute("PRAGMA user_version").fetchone()
+            current_version = int(row[0]) if row else 0
+
+            if current_version < 1:
+                # v1: add workspace_path (already handled above via
+                # suppress — left here as a guard in version history).
+                conn.execute("PRAGMA user_version = 1")
+                current_version = 1
+
+            if current_version < 2:
+                # v2: add user_id column to projects, sessions,
+                # agent_jobs, audit_log, usage_events.  All existing
+                # rows get the "default" bucket so single-user data is
+                # preserved.  Indexes added for (user_id, updated_at)
+                # on the two most-queried tables.
+                for alter_sql in (
+                    "ALTER TABLE projects ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'",
+                    "ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'",
+                    "ALTER TABLE agent_jobs ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'",
+                    "ALTER TABLE audit_log ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'",
+                    "ALTER TABLE usage_events ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'",
+                ):
+                    with contextlib.suppress(sqlite3.OperationalError):
+                        conn.execute(alter_sql)
+                # Composite indexes for per-user list queries.
+                for idx_sql in (
+                    "CREATE INDEX IF NOT EXISTS idx_sessions_user_updated ON sessions(user_id, updated_at DESC)",
+                    "CREATE INDEX IF NOT EXISTS idx_projects_user_updated ON projects(user_id, updated_at DESC)",
+                ):
+                    with contextlib.suppress(sqlite3.OperationalError):
+                        conn.execute(idx_sql)
+                conn.execute("PRAGMA user_version = 2")
+                current_version = 2
+
+            if current_version < 3:
+                # v3: add project_memories table for cross-session pinned
+                # memories. The CREATE TABLE IF NOT EXISTS above handles fresh
+                # DBs; this block ensures older DBs get the table too.
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.executescript(
+                        """
+                        CREATE TABLE IF NOT EXISTS project_memories (
+                            id TEXT PRIMARY KEY,
+                            project_id TEXT NOT NULL,
+                            content TEXT NOT NULL,
+                            source_session_id TEXT,
+                            created_at INTEGER NOT NULL,
+                            user_id TEXT NOT NULL DEFAULT 'default'
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_project_memories_project
+                            ON project_memories(project_id);
+                        CREATE INDEX IF NOT EXISTS idx_project_memories_project_created
+                            ON project_memories(project_id, created_at DESC);
+                        """
+                    )
+                conn.execute("PRAGMA user_version = 3")
+                current_version = 3
+
             _INIT_DONE = True
         finally:
             conn.close()
@@ -199,10 +283,11 @@ def _ts() -> int:
 # ============================================================ Projects
 
 
-def list_projects() -> list[dict[str, Any]]:
+def list_projects(*, user_id: str = "default") -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM projects ORDER BY updated_at DESC"
+            "SELECT * FROM projects WHERE user_id=? ORDER BY updated_at DESC",
+            (user_id,),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -223,6 +308,7 @@ def upsert_project(
     shared_context: str = "",
     color: str = "#6366f1",
     workspace_path: str = "",
+    user_id: str = "default",
 ) -> dict[str, Any]:
     pid = project_id or f"prj_{uuid.uuid4().hex[:12]}"
     now = _ts()
@@ -253,8 +339,8 @@ def upsert_project(
                 """
                 INSERT INTO projects
                   (id, name, description, shared_context, color,
-                   workspace_path, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   workspace_path, created_at, updated_at, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pid,
@@ -265,6 +351,7 @@ def upsert_project(
                     workspace_path,
                     now,
                     now,
+                    user_id,
                 ),
             )
     got = get_project(pid)
@@ -280,17 +367,21 @@ def delete_project(project_id: str) -> None:
 # ============================================================ Sessions
 
 
-def list_sessions(*, project_id: str | None = None) -> list[dict[str, Any]]:
+def list_sessions(
+    *, project_id: str | None = None, user_id: str = "default"
+) -> list[dict[str, Any]]:
     with _connect() as conn:
         if project_id is None:
             rows = conn.execute(
-                "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT 500"
+                "SELECT * FROM sessions WHERE user_id=? "
+                "ORDER BY updated_at DESC LIMIT 500",
+                (user_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM sessions WHERE project_id=? "
+                "SELECT * FROM sessions WHERE project_id=? AND user_id=? "
                 "ORDER BY updated_at DESC LIMIT 500",
-                (project_id,),
+                (project_id, user_id),
             ).fetchall()
     return [dict(r) for r in rows]
 
@@ -309,6 +400,7 @@ def upsert_session(
     title: str = "untitled",
     model: str = "",
     project_id: str | None = None,
+    user_id: str = "default",
 ) -> dict[str, Any]:
     sid = session_id or f"ses_{uuid.uuid4().hex[:12]}"
     now = _ts()
@@ -329,10 +421,10 @@ def upsert_session(
             conn.execute(
                 """
                 INSERT INTO sessions (id, project_id, title, model,
-                                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                                      created_at, updated_at, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (sid, project_id, title, model, now, now),
+                (sid, project_id, title, model, now, now, user_id),
             )
     got = get_session(sid)
     assert got is not None
@@ -407,6 +499,7 @@ def record_usage(
     session_id: str | None = None,
     request_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    user_id: str = "default",
 ) -> None:
     """Persist a usage event. Best effort: any DB error is logged but never
     raised — tracking must not break the request path."""
@@ -417,8 +510,8 @@ def record_usage(
                 INSERT INTO usage_events
                   (ts, kind, provider, model, input_tokens, output_tokens,
                    images, cost_usd, duration_ms, project_id, session_id,
-                   request_id, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   request_id, metadata, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _ts(),
@@ -434,6 +527,7 @@ def record_usage(
                     session_id,
                     request_id,
                     json.dumps(metadata or {}),
+                    user_id,
                 ),
             )
     except Exception as exc:
@@ -446,6 +540,7 @@ def list_usage(
     since_ts: int | None = None,
     kind: str | None = None,
     project_id: str | None = None,
+    user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     where: list[str] = []
     args: list[Any] = []
@@ -458,6 +553,9 @@ def list_usage(
     if project_id is not None:
         where.append("project_id = ?")
         args.append(project_id)
+    if user_id is not None:
+        where.append("user_id = ?")
+        args.append(user_id)
     sql = "SELECT * FROM usage_events"
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -619,18 +717,20 @@ def record_audit(
     event: str,
     detail: str = "",
     metadata: dict[str, Any] | None = None,
+    user_id: str = "default",
 ) -> None:
     try:
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO audit_log (ts, category, event, detail, metadata)"
-                " VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO audit_log (ts, category, event, detail, metadata, user_id)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     _ts(),
                     category,
                     event,
                     detail,
                     json.dumps(metadata or {}),
+                    user_id,
                 ),
             )
     except Exception as exc:
@@ -638,18 +738,23 @@ def record_audit(
 
 
 def list_audit(
-    *, limit: int = 200, category: str | None = None
+    *, limit: int = 200, category: str | None = None, user_id: str | None = None
 ) -> list[dict[str, Any]]:
+    where: list[str] = []
+    args: list[Any] = []
+    if category is not None:
+        where.append("category=?")
+        args.append(category)
+    if user_id is not None:
+        where.append("user_id=?")
+        args.append(user_id)
+    sql = "SELECT * FROM audit_log"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY ts DESC LIMIT ?"
+    args.append(limit)
     with _connect() as conn:
-        if category is None:
-            rows = conn.execute(
-                "SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?", (limit,)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM audit_log WHERE category=? ORDER BY ts DESC LIMIT ?",
-                (category, limit),
-            ).fetchall()
+        rows = conn.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -663,6 +768,7 @@ def create_agent_job(
     model: str,
     request_payload: dict[str, Any],
     metadata: dict[str, Any] | None = None,
+    user_id: str = "default",
 ) -> dict[str, Any]:
     """Insert a new agent job in ``pending`` state and return the row."""
     job_id = f"job_{uuid.uuid4().hex[:14]}"
@@ -672,8 +778,9 @@ def create_agent_job(
             """
             INSERT INTO agent_jobs
               (id, session_id, project_id, model, status, error,
-               created_at, started_at, finished_at, request_json, metadata)
-            VALUES (?, ?, ?, ?, 'pending', '', ?, NULL, NULL, ?, ?)
+               created_at, started_at, finished_at, request_json, metadata,
+               user_id)
+            VALUES (?, ?, ?, ?, 'pending', '', ?, NULL, NULL, ?, ?, ?)
             """,
             (
                 job_id,
@@ -683,6 +790,7 @@ def create_agent_job(
                 now,
                 json.dumps(request_payload),
                 json.dumps(metadata or {}),
+                user_id,
             ),
         )
     return get_agent_job(job_id) or {}
@@ -695,20 +803,26 @@ def get_agent_job(job_id: str) -> dict[str, Any] | None:
 
 
 def list_agent_jobs(
-    *, session_id: str | None = None, limit: int = 100
+    *,
+    session_id: str | None = None,
+    limit: int = 100,
+    user_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    where: list[str] = []
+    args: list[Any] = []
+    if session_id is not None:
+        where.append("session_id=?")
+        args.append(session_id)
+    if user_id is not None:
+        where.append("user_id=?")
+        args.append(user_id)
+    sql = "SELECT * FROM agent_jobs"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    args.append(limit)
     with _connect() as conn:
-        if session_id is None:
-            rows = conn.execute(
-                "SELECT * FROM agent_jobs ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM agent_jobs WHERE session_id=?"
-                " ORDER BY created_at DESC LIMIT ?",
-                (session_id, limit),
-            ).fetchall()
+        rows = conn.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -855,6 +969,85 @@ def memory_delete_path(path: str) -> None:
             )
     except Exception as exc:
         logger.warning("MEMORY: delete_path failed ({})", exc)
+
+
+# ============================================================ Project memories (pinned)
+
+_MEMORIES_HARD_CAP = 10
+_MEMORIES_CHAR_CAP = 4000
+_MEMORY_CONTENT_MAX = 4000
+
+
+def pin_memory(
+    *,
+    project_id: str,
+    content: str,
+    source_session_id: str | None = None,
+    user_id: str = "default",
+) -> dict[str, Any]:
+    """Insert a pinned memory for *project_id* and return the new row.
+
+    Raises ``ValueError`` if the project has reached the hard cap (10 pins) or
+    the combined content would exceed 4 000 characters.
+    """
+    content = content.strip()
+    if not content:
+        raise ValueError("content must not be empty")
+    if len(content) > _MEMORY_CONTENT_MAX:
+        raise ValueError(
+            f"content exceeds maximum length of {_MEMORY_CONTENT_MAX} characters"
+        )
+
+    with _connect() as conn:
+        existing = conn.execute(
+            "SELECT id, content FROM project_memories WHERE project_id=? ORDER BY created_at",
+            (project_id,),
+        ).fetchall()
+        if len(existing) >= _MEMORIES_HARD_CAP:
+            raise ValueError(
+                f"project has reached the maximum of {_MEMORIES_HARD_CAP} pinned memories"
+            )
+        combined_len = sum(len(r["content"]) for r in existing) + len(content)
+        if combined_len > _MEMORIES_CHAR_CAP:
+            raise ValueError(
+                f"combined memory content would exceed {_MEMORIES_CHAR_CAP} characters"
+            )
+        mid = f"mem_{uuid.uuid4().hex[:14]}"
+        now = _ts()
+        conn.execute(
+            """
+            INSERT INTO project_memories
+              (id, project_id, content, source_session_id, created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (mid, project_id, content, source_session_id, now, user_id),
+        )
+    row = get_memory(mid)
+    assert row is not None
+    return row
+
+
+def get_memory(memory_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM project_memories WHERE id=?", (memory_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_memories(project_id: str) -> list[dict[str, Any]]:
+    """Return all pinned memories for *project_id*, oldest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM project_memories WHERE project_id=? ORDER BY created_at",
+            (project_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_memory(memory_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM project_memories WHERE id=?", (memory_id,))
 
 
 def db_path() -> Path:

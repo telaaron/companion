@@ -19,14 +19,29 @@ from config.settings import Settings
 from core.tools.workspace import Workspace
 
 
-def resolve_workspace(request: MessagesRequest, settings: Settings) -> Workspace:
+def resolve_workspace(
+    request: MessagesRequest,
+    settings: Settings,
+    *,
+    user_id: str = "default",
+) -> Workspace:
     candidate = (
         _from_metadata(request.metadata)
         or _from_project(request.metadata)
+        or _from_user_env(user_id)
         or settings.agent_default_workspace
     )
     root = Path(candidate).expanduser() if candidate else Path(os.getcwd())
     return Workspace.create(root)
+
+
+def _from_user_env(user_id: str) -> str | None:
+    """Return the per-user workspace override from env (``AGENT_DEFAULT_WORKSPACE_<user_id>``)."""
+    if not user_id or user_id == "default":
+        return None
+    env_key = f"AGENT_DEFAULT_WORKSPACE_{user_id.upper()}"
+    value = os.environ.get(env_key, "").strip()
+    return value or None
 
 
 def _from_metadata(metadata: dict[str, Any] | None) -> str | None:

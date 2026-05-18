@@ -51,6 +51,7 @@ def start_job(
     max_tokens: int,
     provider_getter,
     metadata: dict[str, Any] | None = None,
+    user_id: str = "default",
 ) -> dict[str, Any]:
     """Create a job row + spawn the background task. Returns the persisted row."""
     request_payload = {
@@ -66,6 +67,7 @@ def start_job(
         model=model,
         request_payload=request_payload,
         metadata=metadata,
+        user_id=user_id,
     )
     job_id = job["id"]
     settings = get_settings()
@@ -120,6 +122,23 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
                             {"type": "text", "text": shared},
                             *existing,
                         ]
+                # Inject pinned memories as bullet-point context.
+                memories = datastore.list_memories(project_id)
+                if memories:
+                    bullets = "\n".join(f"- {m['content']}" for m in memories)
+                    memory_block = (
+                        "Memory you must respect for this project:\n" + bullets
+                    )
+                    current_sys = payload.get("system")
+                    if current_sys is None:
+                        payload["system"] = memory_block
+                    elif isinstance(current_sys, str):
+                        payload["system"] = current_sys + "\n\n" + memory_block
+                    elif isinstance(current_sys, list):
+                        payload["system"] = [
+                            *current_sys,
+                            {"type": "text", "text": memory_block},
+                        ]
 
         request = _build_messages_request(payload)
 
@@ -138,7 +157,8 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
         except Exception as exc:
             logger.warning("Job {} routing failed: {}", job_id, exc)
 
-        workspace = resolve_workspace(request, settings)
+        job_user_id = job.get("user_id") or "default"
+        workspace = resolve_workspace(request, settings, user_id=job_user_id)
         denylist = parse_bash_denylist(settings.agent_bash_denylist)
         extra_env = parse_bash_denylist(settings.agent_bash_extra_env)
         global_limiter = configure_global_tool_limiter(

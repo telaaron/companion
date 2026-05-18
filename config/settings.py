@@ -355,19 +355,30 @@ class Settings(BaseSettings):
         validation_alias="AGENT_BASH_EXTRA_ENV",
     )
 
-    # ==================== Skill Marketplace ====================
-    # URL of the remote skill catalog index.json.
-    # When None or unreachable, GET /v1/skills/catalog returns {skills: []}.
+    # ==================== Multi-user (light) ====================
+    # CSV of ``token=user_id`` pairs that map Bearer tokens to user buckets.
+    # Example: ``abc123=alice,def456=bob``.
+    # When empty, no token-to-user mapping is performed and all traffic falls
+    # back to the ``"default"`` bucket.
+    companion_users: str = Field(
+        default="",
+        validation_alias="COMPANION_USERS",
+        description=(
+            "CSV of token=user_id pairs. "
+            "Maps Bearer tokens to multi-user buckets. Empty = single-user mode."
+        ),
+    )
+
+    # ==================== Skill marketplace ====================
+    # URL to a remote catalog index.json. ``None`` or empty string disables
+    # remote catalog fetching; ``GET /v1/skills/catalog`` will return ``{skills: []}``.
     skills_catalog_url: str | None = Field(
         default=None,
         validation_alias="SKILLS_CATALOG_URL",
-        description="URL of the remote skill catalog index.json (None = disabled).",
-    )
-    # Directory where installed skills are stored (repo-root ``skills/`` by default).
-    skills_dir: str = Field(
-        default="",
-        validation_alias="SKILLS_DIR",
-        description="Absolute path to the skills directory. Empty = auto-detect.",
+        description=(
+            "URL of the remote skills catalog index.json. "
+            "None/empty disables catalog. Default: None."
+        ),
     )
 
     # ==================== Memory / RAG indexer ====================
@@ -464,6 +475,21 @@ class Settings(BaseSettings):
     # Hugging Face token for faster model downloads (optional, for local Whisper)
     hf_token: str = Field(default="", validation_alias="HF_TOKEN")
 
+    # ==================== Voice Mode (hold-spacebar / TTS) ====================
+    # Absolute path to the whisper.cpp binary.  When empty the transcribe endpoint
+    # falls back to the nvidia_nim route (if WHISPER_DEVICE=nvidia_nim) or returns
+    # a 503.  Example: /usr/local/bin/whisper-cpp
+    whisper_binary: str = Field(default="", validation_alias="WHISPER_BINARY")
+    # TTS provider: "mac_say" (default, zero-cost) | "elevenlabs" | "none"
+    tts_provider: str = Field(default="mac_say", validation_alias="TTS_PROVIDER")
+    # ElevenLabs credentials — only required when tts_provider="elevenlabs".
+    elevenlabs_api_key: str = Field(default="", validation_alias="ELEVENLABS_API_KEY")
+    elevenlabs_voice_id: str = Field(
+        default="21m00Tcm4TlvDq8ikWAM", validation_alias="ELEVENLABS_VOICE_ID"
+    )
+    # When true, the UI auto-submits the transcribed text without a manual send.
+    voice_auto_send: bool = Field(default=False, validation_alias="VOICE_AUTO_SEND")
+
     # ==================== Bot Wrapper Config ====================
     telegram_bot_token: str | None = None
     allowed_telegram_user_id: str | None = None
@@ -534,6 +560,15 @@ class Settings(BaseSettings):
         if v not in ("cpu", "cuda", "nvidia_nim"):
             raise ValueError(
                 f"whisper_device must be 'cpu', 'cuda', or 'nvidia_nim', got {v!r}"
+            )
+        return v
+
+    @field_validator("tts_provider")
+    @classmethod
+    def validate_tts_provider(cls, v: str) -> str:
+        if v not in ("mac_say", "elevenlabs", "none"):
+            raise ValueError(
+                f"tts_provider must be 'mac_say', 'elevenlabs', or 'none', got {v!r}"
             )
         return v
 

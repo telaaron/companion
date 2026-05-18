@@ -146,36 +146,36 @@ _ENV_SET = ToolSpec(
 _SKILL_LIST = ToolSpec(
     name="SkillList",
     description=(
-        "List all installed skills. Returns name, description, entry script, "
-        "and version for each skill in the skills/ directory."
+        "List all skills installed in the skills/ directory. "
+        "Returns name, slug, description, and entry script for each skill."
     ),
     input_schema={"type": "object", "properties": {}, "required": []},
-    executor=skills_executor.execute_skill_list,
+    executor=skills_executor.skill_list_execute,
 )
 
 
 _SKILL_RUN = ToolSpec(
     name="SkillRun",
     description=(
-        "Run an installed skill by name. The skill's entry script is executed "
-        "as a Python subprocess with the supplied args dict passed as JSON on stdin. "
-        "Returns stdout on success, or stderr on failure. 60-second timeout."
+        "Run an installed skill by name or slug. Pass skill arguments as "
+        "a JSON object in 'args'. The skill's stdout is returned. "
+        "Stderr is included on non-zero exit. Hard 60-second timeout."
     ),
     input_schema={
         "type": "object",
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (matches the folder name in skills/).",
+                "description": "Skill name or slug (directory name under skills/).",
             },
             "args": {
                 "type": "object",
-                "description": "Arguments dict passed to the skill as JSON on stdin.",
+                "description": "Arguments passed as JSON to the entry script.",
             },
         },
         "required": ["name"],
     },
-    executor=skills_executor.execute_skill_run,
+    executor=skills_executor.skill_run_execute,
 )
 
 

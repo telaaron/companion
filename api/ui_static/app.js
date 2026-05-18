@@ -236,6 +236,7 @@
     root: { label: "Root files", render: () => renderRoot() },
     skills: { label: "Skills", render: () => renderSkills() },
     memory: { label: "Memory", render: () => renderMemory() },
+    insights: { label: "Insights", render: () => renderInsights() },
     settings: { label: "Settings", render: () => renderSettings() },
   };
   let currentRoute = location.hash.replace("#", "") || "chat";
@@ -811,6 +812,122 @@
     renderChatMain(main, detail, projects, upstreamModels);
   }
 
+  // ============================================================ Voice mode
+  //
+  // Hold spacebar (>=200 ms) while the chat textarea is focused and empty to
+  // start recording via MediaRecorder.  Release the key to stop + POST the
+  // blob to /v1/transcribe.  A red pulsing dot is shown during recording.
+  // If a <meta name="voice-auto-send" content="true"> tag is present, the
+  // form is automatically submitted after transcription.
+  //
+  // Degrades gracefully: if getUserMedia is denied or MediaRecorder is
+  // unavailable the textarea behaves like a plain input.
+
+  function _attachVoiceMode(ta, composerForm) {
+    if (!window.MediaRecorder || !navigator.mediaDevices) return;
+
+    let _recording = false;
+    let _holdTimer = null;
+    let _mediaRecorder = null;
+    let _stream = null;
+    let _chunks = [];
+    let _indicator = null;
+
+    function _showIndicator() {
+      if (_indicator) return;
+      _indicator = el("span", {
+        class: "voice-indicator",
+        title: "Recording… release Space to send",
+      });
+      composerForm.appendChild(_indicator);
+    }
+
+    function _hideIndicator() {
+      if (_indicator) {
+        _indicator.remove();
+        _indicator = null;
+      }
+    }
+
+    async function _startRecording() {
+      if (_recording) return;
+      try {
+        _stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (_e) {
+        return; // mic denied — degrade gracefully
+      }
+      _chunks = [];
+      _mediaRecorder = new MediaRecorder(_stream, {
+        mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm",
+      });
+      _mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) _chunks.push(e.data);
+      };
+      _mediaRecorder.start(100);
+      _recording = true;
+      _showIndicator();
+    }
+
+    async function _stopAndTranscribe() {
+      if (!_recording || !_mediaRecorder) return;
+      _recording = false;
+      _hideIndicator();
+
+      await new Promise((resolve) => {
+        _mediaRecorder.onstop = resolve;
+        _mediaRecorder.stop();
+      });
+      if (_stream) {
+        _stream.getTracks().forEach((t) => t.stop());
+        _stream = null;
+      }
+
+      const blob = new Blob(_chunks, { type: _mediaRecorder.mimeType });
+      _chunks = [];
+      if (blob.size < 100) return; // too short — ignore
+
+      const form = new FormData();
+      form.append("audio", blob, "audio.webm");
+
+      try {
+        const res = await fetch("/v1/transcribe", {
+          method: "POST",
+          headers: { Authorization: "Bearer " + AUTH },
+          body: form,
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const text = (data.text || "").trim();
+        if (!text) return;
+        ta.value = ta.value ? ta.value + " " + text : text;
+        ta.dispatchEvent(new Event("input")); // trigger auto-resize
+        const autoSendMeta = document
+          .querySelector('meta[name="voice-auto-send"]')
+          ?.getAttribute("content");
+        if (autoSendMeta === "true") composerForm.requestSubmit();
+      } catch (_e) {
+        /* network error — ignore */
+      }
+    }
+
+    ta.addEventListener("keydown", (e) => {
+      if (e.key !== " " || e.repeat || _recording) return;
+      if (ta.value.trim()) return; // don't hijack typed content
+      _holdTimer = setTimeout(() => _startRecording(), 200);
+    });
+
+    ta.addEventListener("keyup", (e) => {
+      if (e.key !== " ") return;
+      if (_holdTimer) {
+        clearTimeout(_holdTimer);
+        _holdTimer = null;
+      }
+      if (_recording) _stopAndTranscribe();
+    });
+  }
+
   function renderChatMain(host, session, projects, upstreamModels) {
     host.innerHTML = "";
     const topbar = el("div", { class: "chat-topbar" });
@@ -1025,6 +1142,9 @@
     const ta = $("textarea", composer);
     host.appendChild(composer);
 
+    // ---- Voice mode: hold-spacebar to record, release to transcribe ----
+    _attachVoiceMode(ta, composer);
+
     // Render existing messages; populate preview LRU from past tool calls.
     const _seenPaths = new Set();
     const _trackMsg = (content) => {
@@ -1091,6 +1211,7 @@
       !msg.error
     ) {
       attachRegenerateButton(wrap, ctx);
+      attachPinButton(wrap, msg, ctx);
     }
     return wrap;
   }
@@ -1176,6 +1297,48 @@
       cursor = cursor.previousElementSibling;
     }
     return "";
+  }
+
+  // attachPinButton: 📌 kebab-menu action on finalized assistant bubbles.
+  // Only shown when the session belongs to a project.
+  function attachPinButton(messageNode, msg, ctx) {
+    const projectId = ctx.session && ctx.session.project_id;
+    if (!projectId) return;
+
+    const btn = el(
+      "button",
+      {
+        class: "pin-btn",
+        type: "button",
+        title: "Pin to project memory",
+      },
+      "📌"
+    );
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const body = messageNode.querySelector(".message-body");
+      const content = body ? body.innerText.trim() : (msg.content || "").trim();
+      if (!content) {
+        toastShow("Nothing to pin — empty message.", "error");
+        return;
+      }
+      try {
+        await api(
+          `/v1/projects/${encodeURIComponent(projectId)}/memories`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              content: content.slice(0, 4000),
+              source_session_id: ctx.session.id,
+            }),
+          }
+        );
+        toastShow("Pinned to project memory ✓", "ok");
+      } catch (err) {
+        toastShow(`Pin failed: ${err.message}`, "error");
+      }
+    });
+    messageNode.appendChild(btn);
   }
 
   // localStorage helpers: track the in-flight job_id per session so the chat
@@ -1663,6 +1826,92 @@
         }
       }
       card.appendChild(sessList);
+
+      // Memories panel: list pinned memories with delete + session link.
+      const memPanel = el("div", { class: "project-memories" });
+      const memTitle = el("div", { class: "project-memories-title" }, "📌 Memories");
+      memPanel.appendChild(memTitle);
+
+      async function refreshMemories() {
+        // Remove all children except the title.
+        while (memPanel.children.length > 1) memPanel.removeChild(memPanel.lastChild);
+        let mems;
+        try {
+          const resp = await api(
+            `/v1/projects/${encodeURIComponent(p.id)}/memories`
+          );
+          mems = resp.memories || [];
+        } catch {
+          mems = [];
+        }
+        if (!mems.length) {
+          memPanel.appendChild(
+            el(
+              "div",
+              { class: "project-sessions-empty" },
+              "No pinned memories yet — use the 📌 button on an assistant reply"
+            )
+          );
+          return;
+        }
+        for (const m of mems) {
+          const row = el("div", { class: "memory-row" });
+          const snippet = el(
+            "div",
+            { class: "memory-content" },
+            m.content.length > 120 ? m.content.slice(0, 120) + "…" : m.content
+          );
+          const meta = el(
+            "div",
+            { class: "memory-meta" },
+            fmtTime(m.created_at)
+          );
+          if (m.source_session_id) {
+            const link = el(
+              "button",
+              {
+                class: "memory-link",
+                type: "button",
+                title: "Open source session",
+                onclick: (e) => {
+                  e.stopPropagation();
+                  activeSessionId = m.source_session_id;
+                  setRoute("chat");
+                },
+              },
+              "↗"
+            );
+            meta.appendChild(link);
+          }
+          const delBtn = el(
+            "button",
+            {
+              class: "icon-btn icon-btn-danger",
+              type: "button",
+              title: "Delete memory",
+              onclick: async (e) => {
+                e.stopPropagation();
+                try {
+                  await api(
+                    `/v1/projects/${encodeURIComponent(p.id)}/memories/${encodeURIComponent(m.id)}`,
+                    { method: "DELETE" }
+                  );
+                  toastShow("Memory deleted", "ok");
+                  refreshMemories();
+                } catch (err) {
+                  toastShow(`Delete failed: ${err.message}`, "error");
+                }
+              },
+            },
+            "✕"
+          );
+          row.append(snippet, meta, delBtn);
+          memPanel.appendChild(row);
+        }
+      }
+
+      refreshMemories();
+      card.appendChild(memPanel);
       body.appendChild(card);
     }
   }
@@ -2593,51 +2842,177 @@
       }
     }
 
-    // ---------- Skills section
-    const skillsSection = el("section", { class: "skills-section" });
-    skillsSection.appendChild(
+    // ---------- Installed skills section (marketplace)
+    const installedSection = el("section", { class: "skills-section" });
+    installedSection.appendChild(
       el(
         "div",
         { class: "section-heading" },
-        el("h3", {}, "Skills"),
-        el("span", { class: "muted fs-12" }, "SKILL.md files in your Claude install")
+        el("h3", {}, "Installed skills"),
+        el("span", { class: "muted fs-12" }, "skills/ directory in this repo")
       )
     );
-    const data = await api("/v1/skills").catch(() => ({ skills: [], search_paths: [] }));
-    if (!data.skills?.length) {
-      skillsSection.appendChild(
+    const localData = await api("/v1/skills/local").catch(() => ({ skills: [] }));
+    if (!localData.skills?.length) {
+      installedSection.appendChild(
         el(
           "div",
           { class: "empty" },
           el("div", { class: "empty-icon" }, "★"),
-          el("div", { class: "empty-title" }, "No skills found"),
+          el("div", { class: "empty-title" }, "No skills installed"),
+          el("div", { class: "empty-sub" }, "Browse the catalog below and click Install")
+        )
+      );
+    } else {
+      const grid = el("div", { class: "grid-cards" });
+      for (const s of localData.skills) {
+        const card = el(
+          "article",
+          { class: "card" },
+          el("div", { class: "card-title" }, s.name),
+          el("div", { class: "card-sub" }, s.description || "no description"),
+          el("div", { class: "muted truncate", style: { fontSize: "11px" } }, s.entry),
+          el(
+            "div",
+            { class: "mcp-card-actions" },
+            el(
+              "button",
+              {
+                class: "btn btn-sm btn-ghost",
+                onclick: async () => {
+                  if (!confirm(`Uninstall skill "${s.slug}"? This removes the skills/${s.slug} folder.`)) return;
+                  try {
+                    await api(`/v1/skills/local/${encodeURIComponent(s.slug)}`, { method: "DELETE" });
+                    toastShow(`Skill "${s.slug}" uninstalled`, "ok");
+                    setTimeout(renderSkills, 400);
+                  } catch (e) {
+                    toastShow(`Uninstall failed: ${e.message}`, "error");
+                  }
+                },
+              },
+              "Uninstall"
+            )
+          )
+        );
+        grid.appendChild(card);
+      }
+      installedSection.appendChild(grid);
+    }
+    body.appendChild(installedSection);
+
+    // ---------- Legacy skills section (from ~/.claude)
+    const legacySection = el("section", { class: "skills-section" });
+    legacySection.appendChild(
+      el(
+        "div",
+        { class: "section-heading" },
+        el("h3", {}, "Claude skills (legacy)"),
+        el("span", { class: "muted fs-12" }, "SKILL.md files in your Claude install")
+      )
+    );
+    const legacyData = await api("/v1/skills").catch(() => ({ skills: [], search_paths: [] }));
+    if (!legacyData.skills?.length) {
+      legacySection.appendChild(
+        el(
+          "div",
+          { class: "empty" },
+          el("div", { class: "empty-icon" }, "📦"),
+          el("div", { class: "empty-title" }, "No legacy skills found"),
           el(
             "div",
             { class: "empty-sub" },
-            "Searched: " + (data.search_paths || []).join(", ")
+            "Searched: " + (legacyData.search_paths || []).join(", ")
           )
         )
       );
     } else {
       const grid = el("div", { class: "grid-cards" });
-      for (const s of data.skills) {
+      for (const s of legacyData.skills) {
         grid.appendChild(
           el(
             "div",
             { class: "card" },
             el("div", { class: "card-title" }, s.name),
             el("div", { class: "card-sub" }, s.description || "no description"),
-            el(
-              "div",
-              { class: "muted truncate", style: { fontSize: "11px" } },
-              s.path
-            )
+            el("div", { class: "muted truncate", style: { fontSize: "11px" } }, s.path)
           )
         );
       }
-      skillsSection.appendChild(grid);
+      legacySection.appendChild(grid);
     }
-    body.appendChild(skillsSection);
+    body.appendChild(legacySection);
+
+    // ---------- Remote catalog section
+    const catalogSection = el("section", { class: "skills-section" });
+    catalogSection.appendChild(
+      el(
+        "div",
+        { class: "section-heading" },
+        el("h3", {}, "Skill catalog"),
+        el("span", { class: "muted fs-12" }, "Set SKILLS_CATALOG_URL to enable remote browsing")
+      )
+    );
+    const catalogData = await api("/v1/skills/catalog").catch(() => ({ skills: [], source: null }));
+    if (!catalogData.skills?.length) {
+      catalogSection.appendChild(
+        el(
+          "div",
+          { class: "empty" },
+          el("div", { class: "empty-icon" }, "🌐"),
+          el("div", { class: "empty-title" }, "No catalog available"),
+          el(
+            "div",
+            { class: "empty-sub" },
+            catalogData.source
+              ? "Catalog at " + catalogData.source + " returned no skills"
+              : "Configure SKILLS_CATALOG_URL to browse installable skills"
+          )
+        )
+      );
+    } else {
+      const installedSlugs = new Set((localData.skills || []).map((s) => s.slug));
+      const grid = el("div", { class: "grid-cards" });
+      for (const s of catalogData.skills) {
+        const alreadyInstalled = installedSlugs.has(s.slug);
+        const installBtn = el(
+          "button",
+          {
+            class: "btn btn-sm" + (alreadyInstalled ? " btn-ghost" : ""),
+            disabled: alreadyInstalled || undefined,
+            onclick: async () => {
+              if (
+                !confirm(
+                  `Install "${s.name || s.slug}"?\n\nThis will download and execute code from:\n${s.tarball_url || s.url || catalogData.source}\n\nContinue?`
+                )
+              )
+                return;
+              installBtn.disabled = true;
+              installBtn.textContent = "Installing…";
+              try {
+                await api(`/v1/skills/install/${encodeURIComponent(s.slug)}`, { method: "POST" });
+                toastShow(`Skill "${s.slug}" installed`, "ok");
+                setTimeout(renderSkills, 600);
+              } catch (e) {
+                toastShow(`Install failed: ${e.message}`, "error");
+                installBtn.disabled = false;
+                installBtn.textContent = "Install";
+              }
+            },
+          },
+          alreadyInstalled ? "Installed" : "Install"
+        );
+        const card = el(
+          "article",
+          { class: "card" },
+          el("div", { class: "card-title" }, s.name || s.slug),
+          el("div", { class: "card-sub" }, s.description || ""),
+          el("div", { class: "mcp-card-actions" }, installBtn)
+        );
+        grid.appendChild(card);
+      }
+      catalogSection.appendChild(grid);
+    }
+    body.appendChild(catalogSection);
   }
 
   // ============================================================ Settings view
@@ -3738,6 +4113,194 @@
       pathLabel,
       langBadge
     );
+  }
+
+  // ============================================================ Insights page
+  async function renderInsights(range = "7d") {
+    const view = $("#view");
+    view.innerHTML = "";
+
+    const RANGES = ["1h", "24h", "7d", "30d", "all"];
+    const fmtUsd = (n) =>
+      new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 4,
+      }).format(n);
+    const fmtInt = (n) =>
+      new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(n);
+
+    view.appendChild(
+      pageHeader({
+        title: "Insights",
+        sub: "Rule-based reflection over the last window",
+        actions: [
+          el(
+            "div",
+            { class: "range-tabs" },
+            ...RANGES.map((r) =>
+              el(
+                "button",
+                {
+                  class: "range-tab" + (r === range ? " active" : ""),
+                  onclick: () => renderInsights(r),
+                },
+                r
+              )
+            )
+          ),
+        ],
+      })
+    );
+
+    const body = el("div", { class: "page-body" });
+    view.appendChild(body);
+
+    body.appendChild(el("div", { class: "empty" }, "Loading…"));
+
+    let data;
+    try {
+      data = await api(`/v1/insights?range=${encodeURIComponent(range)}`);
+    } catch (err) {
+      body.innerHTML = "";
+      body.appendChild(el("div", { class: "empty" }, `Failed to load insights: ${err.message}`));
+      return;
+    }
+
+    body.innerHTML = "";
+    const grid = el("div", { class: "insights-grid" });
+    body.appendChild(grid);
+
+    // ---- Tools card ----
+    const toolsCard = el("div", { class: "insights-card" });
+    toolsCard.appendChild(el("h2", { class: "card-title" }, "Tool calls"));
+    if (!data.tools || data.tools.length === 0) {
+      toolsCard.appendChild(
+        el("p", { class: "muted" }, "No tool-call data for this window.")
+      );
+    } else {
+      const tbl = el("table", { class: "insights-table" });
+      tbl.appendChild(
+        el(
+          "thead",
+          {},
+          el(
+            "tr",
+            {},
+            el("th", {}, "Tool"),
+            el("th", { class: "num" }, "Calls"),
+            el("th", { class: "num" }, "Avg ms"),
+            el("th", { class: "num" }, "Errors")
+          )
+        )
+      );
+      const tbody = el("tbody", {});
+      (data.tools || []).forEach((t) => {
+        const errRate = t.calls > 0 ? t.errors / t.calls : 0;
+        const errClass = errRate > 0.1 ? "cell-warn" : "";
+        tbody.appendChild(
+          el(
+            "tr",
+            {},
+            el("td", {}, t.name),
+            el("td", { class: "num" }, fmtInt(t.calls)),
+            el("td", { class: "num" }, fmtInt(t.avg_ms)),
+            el("td", { class: `num ${errClass}` }, fmtInt(t.errors))
+          )
+        );
+      });
+      tbl.appendChild(tbody);
+      toolsCard.appendChild(tbl);
+    }
+    grid.appendChild(toolsCard);
+
+    // ---- Providers card ----
+    const provCard = el("div", { class: "insights-card" });
+    provCard.appendChild(el("h2", { class: "card-title" }, "Provider cost"));
+    if (!data.providers || data.providers.length === 0) {
+      provCard.appendChild(el("p", { class: "muted" }, "No usage data for this window."));
+    } else {
+      const tbl = el("table", { class: "insights-table" });
+      tbl.appendChild(
+        el(
+          "thead",
+          {},
+          el(
+            "tr",
+            {},
+            el("th", {}, "Provider"),
+            el("th", { class: "num" }, "Cost"),
+            el("th", { class: "num" }, "Tokens")
+          )
+        )
+      );
+      const tbody = el("tbody", {});
+      (data.providers || []).forEach((p) => {
+        tbody.appendChild(
+          el(
+            "tr",
+            {},
+            el("td", {}, p.provider),
+            el("td", { class: "num" }, fmtUsd(p.cost_usd)),
+            el("td", { class: "num" }, fmtInt(p.tokens))
+          )
+        );
+      });
+      tbl.appendChild(tbody);
+      provCard.appendChild(tbl);
+    }
+    grid.appendChild(provCard);
+
+    // ---- Suggestions card ----
+    const suggCard = el("div", { class: "insights-card" });
+    suggCard.appendChild(el("h2", { class: "card-title" }, "Suggestions"));
+    if (!data.suggestions || data.suggestions.length === 0) {
+      suggCard.appendChild(
+        el("p", { class: "muted" }, "No actionable suggestions for this window.")
+      );
+    } else {
+      (data.suggestions || []).forEach((s) => {
+        const card = el("div", { class: "suggestion-item" });
+        card.appendChild(el("div", { class: "suggestion-title" }, s.title));
+        card.appendChild(el("div", { class: "suggestion-body" }, s.body));
+
+        if (s.action && s.action.type === "env_set") {
+          const applyBtn = el(
+            "button",
+            {
+              class: "btn-apply",
+              onclick: async () => {
+                applyBtn.disabled = true;
+                applyBtn.textContent = "Applying…";
+                try {
+                  const key = s.action.key;
+                  const envData = await api("/v1/env");
+                  const existing = (envData.entries || []).find((e) => e.key === key);
+                  const current = existing ? existing.value : "";
+                  const newVal = current ? `${current},${s.action.hint}` : s.action.hint;
+                  await api("/v1/env", {
+                    method: "PUT",
+                    body: JSON.stringify({ key, value: newVal }),
+                  });
+                  applyBtn.textContent = "Applied";
+                  applyBtn.classList.add("applied");
+                } catch (applyErr) {
+                  applyBtn.disabled = false;
+                  applyBtn.textContent = "Retry";
+                  card.appendChild(
+                    el("div", { class: "error-banner" }, `Error: ${applyErr.message}`)
+                  );
+                }
+              },
+            },
+            "Apply"
+          );
+          card.appendChild(applyBtn);
+        }
+        suggCard.appendChild(card);
+      });
+    }
+    grid.appendChild(suggCard);
   }
 
   // ============================================================ Memory / RAG index page

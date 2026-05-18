@@ -10,15 +10,19 @@ the global proxy rate limiter (single-user assumption).
 from __future__ import annotations
 
 import asyncio
-import json
+import io
 import os
 import re
+import subprocess
+import tarfile
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import Response
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -26,7 +30,7 @@ from config.settings import Settings
 from providers.registry import ProviderRegistry
 
 from . import datastore
-from .dependencies import get_settings, require_api_key
+from .dependencies import CurrentUserId, get_settings, require_api_key
 from .pricing import known_image_prices, known_token_prices, pricing_snapshot
 
 dashboard_router = APIRouter()
@@ -49,6 +53,22 @@ _SECRET_KEY_HINTS = (
 )
 
 
+# ============================================================ Identity
+
+
+@dashboard_router.get("/v1/me")
+async def me_route(
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return the caller's resolved user_id.
+
+    Useful for the UI to display the active user and detect whether
+    multi-user mode is in effect (``user_id != "default"``).
+    """
+    return {"user_id": user_id}
+
+
 # ============================================================ Projects
 
 
@@ -61,13 +81,18 @@ class ProjectIn(BaseModel):
 
 
 @dashboard_router.get("/v1/projects")
-async def list_projects(_auth=Depends(require_api_key)) -> dict[str, Any]:
-    return {"projects": datastore.list_projects()}
+async def list_projects(
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    return {"projects": datastore.list_projects(user_id=user_id)}
 
 
 @dashboard_router.post("/v1/projects")
 async def create_project(
-    body: ProjectIn, _auth=Depends(require_api_key)
+    body: ProjectIn,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
     return datastore.upsert_project(
         name=body.name,
@@ -75,6 +100,7 @@ async def create_project(
         shared_context=body.shared_context,
         color=body.color,
         workspace_path=body.workspace_path,
+        user_id=user_id,
     )
 
 
@@ -110,6 +136,57 @@ async def delete_project_route(
     return {"ok": True}
 
 
+# ============================================================ Project memories
+
+
+class MemoryIn(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+    source_session_id: str | None = None
+
+
+@dashboard_router.get("/v1/projects/{project_id}/memories")
+async def list_project_memories(
+    project_id: str, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    if datastore.get_project(project_id) is None:
+        raise HTTPException(404, "project not found")
+    return {"memories": datastore.list_memories(project_id)}
+
+
+@dashboard_router.post("/v1/projects/{project_id}/memories")
+async def pin_project_memory(
+    project_id: str,
+    body: MemoryIn,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    if datastore.get_project(project_id) is None:
+        raise HTTPException(404, "project not found")
+    try:
+        memory = datastore.pin_memory(
+            project_id=project_id,
+            content=body.content,
+            source_session_id=body.source_session_id,
+            user_id=user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return memory
+
+
+@dashboard_router.delete("/v1/projects/{project_id}/memories/{memory_id}")
+async def delete_project_memory(
+    project_id: str,
+    memory_id: str,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    mem = datastore.get_memory(memory_id)
+    if mem is None or mem.get("project_id") != project_id:
+        raise HTTPException(404, "memory not found")
+    datastore.delete_memory(memory_id)
+    return {"ok": True}
+
+
 # ============================================================ Sessions
 
 
@@ -121,17 +198,21 @@ class SessionIn(BaseModel):
 
 @dashboard_router.get("/v1/sessions")
 async def list_sessions_route(
-    project_id: str | None = None, _auth=Depends(require_api_key)
+    user_id: CurrentUserId,
+    project_id: str | None = None,
+    _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
-    return {"sessions": datastore.list_sessions(project_id=project_id)}
+    return {"sessions": datastore.list_sessions(project_id=project_id, user_id=user_id)}
 
 
 @dashboard_router.post("/v1/sessions")
 async def create_session_route(
-    body: SessionIn, _auth=Depends(require_api_key)
+    body: SessionIn,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
     return datastore.upsert_session(
-        title=body.title, model=body.model, project_id=body.project_id
+        title=body.title, model=body.model, project_id=body.project_id, user_id=user_id
     )
 
 
@@ -352,6 +433,27 @@ async def pricing_route(_auth=Depends(require_api_key)) -> dict[str, Any]:
     }
 
 
+# ============================================================ Insights
+
+
+@dashboard_router.get("/v1/insights")
+async def insights_route(
+    user_id: CurrentUserId,
+    range: str = "7d",
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return rule-based insights over audit_log + usage_events.
+
+    Results are cached for 5 minutes per ``(range, user_id)`` pair.
+    Supported ``range`` values: ``1h``, ``24h``, ``7d`` (default), ``30d``, ``all``.
+    """
+    from api.agent.insights import compute_insights
+
+    since_ts = _since_ts(range)
+    data = compute_insights(since_ts=since_ts, user_id=user_id)
+    return {"range": range, "since_ts": since_ts, **data}
+
+
 # ============================================================ File edits / audit
 
 
@@ -370,13 +472,14 @@ async def file_edits_route(
 
 @dashboard_router.get("/v1/audit")
 async def audit_route(
+    user_id: CurrentUserId,
     category: str | None = None,
     limit: int = 200,
     _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
     return {
         "events": datastore.list_audit(
-            category=category, limit=max(1, min(limit, 1000))
+            category=category, limit=max(1, min(limit, 1000)), user_id=user_id
         )
     }
 
@@ -632,84 +735,68 @@ async def skills_route(_auth=Depends(require_api_key)) -> dict[str, Any]:
     return {"skills": _scan_skills(), "search_paths": [str(p) for p in _SKILL_DIRS]}
 
 
-# ============================================================ Skills marketplace
+# ============================================================ Skill marketplace (new)
 
+# Repo-root skills dir (two levels up from api/dashboard_routes.py)
+_REPO_SKILLS_ROOT = Path(__file__).resolve().parents[1] / "skills"
 
-# Disk cache for the remote catalog (24-hour TTL).
-_CATALOG_CACHE_FILE = Path.home() / ".cache" / "fcc" / "skills_catalog.json"
-_CATALOG_TTL_S = 24 * 60 * 60
-
-
-def _skills_root() -> Path:
-    """Return the repo-local skills/ directory."""
-    from api.agent.extras.skills import _skills_root as _sr
-
-    return _sr()
+# Catalog cache: (fetched_at_epoch, payload)
+_catalog_cache: tuple[float, dict[str, Any]] | None = None
+_CATALOG_CACHE_TTL_S = 24 * 60 * 60  # 24 hours
+_CATALOG_FETCH_TIMEOUT_S = 10.0
 
 
 def _local_skills_list() -> list[dict[str, Any]]:
-    """List installed skills from the skills/ directory."""
-    from api.agent.extras.skills import rescan_skills
+    """Return installed skills from the repo-root ``skills/`` directory."""
+    from api.agent.extras.skills import scan_skills
 
-    rescan_skills()
-    from api.agent.extras.skills import list_skills
-
-    return [s.to_dict() for s in list_skills()]
-
-
-async def _fetch_catalog(catalog_url: str) -> list[dict[str, Any]]:
-    """Fetch the remote catalog index.json, return parsed skills list."""
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(catalog_url)
-        resp.raise_for_status()
-        data = resp.json()
-    return data if isinstance(data, list) else data.get("skills", [])
-
-
-def _load_cached_catalog() -> list[dict[str, Any]] | None:
-    """Return the on-disk cached catalog if it's still fresh."""
-    if not _CATALOG_CACHE_FILE.is_file():
-        return None
-    try:
-        stat = _CATALOG_CACHE_FILE.stat()
-        if (Path("/dev/null").parent.stat().st_mtime - stat.st_mtime) > _CATALOG_TTL_S:
-            # Use real monotonic time to check TTL
-            import time as _time
-
-            if (_time.time() - stat.st_mtime) > _CATALOG_TTL_S:
-                return None
-        data = json.loads(_CATALOG_CACHE_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else data.get("skills", [])
-    except Exception:
-        return None
-
-
-def _save_catalog_cache(skills: list[dict[str, Any]]) -> None:
-    try:
-        _CATALOG_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _CATALOG_CACHE_FILE.write_text(json.dumps(skills, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _validate_install_path(skills_root: Path, slug: str, member_path: str) -> bool:
-    """Return True iff the extracted path stays within skills_root/slug/."""
-    try:
-        target = (skills_root / slug / member_path).resolve()
-        allowed = (skills_root / slug).resolve()
-        target.relative_to(allowed)
-        return True
-    except ValueError, OSError:
-        return False
+    skills = scan_skills(_REPO_SKILLS_ROOT)
+    return [
+        {
+            "name": s.name,
+            "slug": s.slug,
+            "description": s.description,
+            "entry": s.entry,
+            "path": str(s.path),
+        }
+        for s in skills
+    ]
 
 
 @dashboard_router.get("/v1/skills/local")
-async def skills_local_route(
-    _auth=Depends(require_api_key),
-) -> dict[str, Any]:
-    """Return installed skills from the repo-local ``skills/`` directory."""
-    skills = _local_skills_list()
-    return {"skills": skills, "skills_dir": str(_skills_root())}
+async def skills_local_route(_auth=Depends(require_api_key)) -> dict[str, Any]:
+    """Return skills installed in the repo-root ``skills/`` directory."""
+    return {"skills": _local_skills_list()}
+
+
+async def _fetch_catalog(catalog_url: str) -> dict[str, Any]:
+    """Fetch and return the remote catalog JSON, or empty on failure."""
+    global _catalog_cache
+
+    now = time.time()
+    if _catalog_cache is not None:
+        fetched_at, payload = _catalog_cache
+        if now - fetched_at < _CATALOG_CACHE_TTL_S:
+            return payload
+
+    try:
+        async with httpx.AsyncClient(timeout=_CATALOG_FETCH_TIMEOUT_S) as client:
+            resp = await client.get(catalog_url)
+        if resp.status_code != 200:
+            logger.warning(
+                "SKILLS: catalog fetch returned HTTP {} from {}",
+                resp.status_code,
+                catalog_url,
+            )
+            return {"skills": []}
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            payload = {"skills": []}
+        _catalog_cache = (now, payload)
+        return payload
+    except Exception as exc:
+        logger.warning("SKILLS: catalog fetch failed ({}): {}", catalog_url, exc)
+        return {"skills": []}
 
 
 @dashboard_router.get("/v1/skills/catalog")
@@ -717,154 +804,162 @@ async def skills_catalog_route(
     settings: Settings = Depends(get_settings),
     _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
-    """Return the remote skill catalog.
+    """Return the remote skills catalog, cached 24 h on disk.
 
-    Caches the result for 24 hours.  Returns ``{skills: []}`` when the
-    catalog URL is not configured or the remote is unreachable.
+    Returns ``{skills: []}`` when ``SKILLS_CATALOG_URL`` is not configured
+    or the remote is unreachable.
     """
-
     catalog_url = settings.skills_catalog_url
     if not catalog_url:
-        return {"skills": [], "cached": False, "source": None}
+        return {"skills": [], "source": None}
 
-    # Try disk cache first.
-    cached = _load_cached_catalog()
-    if cached is not None:
-        return {
-            "skills": cached,
-            "cached": True,
-            "source": catalog_url,
-        }
+    payload = await _fetch_catalog(catalog_url)
+    payload["source"] = catalog_url
+    return payload
 
-    try:
-        skills = await _fetch_catalog(catalog_url)
-        _save_catalog_cache(skills)
-        return {
-            "skills": skills,
-            "cached": False,
-            "source": catalog_url,
-        }
-    except Exception as exc:
-        logger.warning("skills_catalog: fetch failed from {}: {}", catalog_url, exc)
-        return {"skills": [], "cached": False, "source": catalog_url, "error": str(exc)}
+
+def _validate_tar_path(member_name: str, slug: str) -> bool:
+    """Return True if the tar member path stays within ``skills/{slug}/``."""
+    # Normalise to forward slashes
+    norm = member_name.replace("\\", "/").lstrip("/")
+    # Must start with slug/ (or be slug itself)
+    prefix = slug + "/"
+    if norm == slug:
+        return True
+    if not norm.startswith(prefix):
+        return False
+    # Reject any traversal segments
+    rest = norm[len(prefix) :]
+    return all(part not in ("", ".", "..") for part in rest.split("/"))
 
 
 @dashboard_router.post("/v1/skills/install/{slug}")
-async def skills_install_route(
+async def install_skill(
     slug: str,
     request: Request,
     settings: Settings = Depends(get_settings),
     _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
-    """Download and install a skill from the remote catalog.
+    """Download and extract a skill tarball from the catalog.
 
-    The slug must be a simple identifier (alphanumeric, hyphens, underscores).
-    Validates that extracted paths do not escape the skill's own folder.
+    The request body may supply ``{"url": "..."}`` to override the download
+    URL; otherwise the catalog entry for ``slug`` is used.
+
+    Security
+    --------
+    - ``slug`` must be a safe identifier (alphanumeric + hyphens/underscores).
+    - Every tar member is validated to stay within ``skills/{slug}/``.
+    - Path-traversal attempts cause a 400 error.
     """
-    import io
-    import tarfile
-
+    # Validate slug shape
     if not re.match(r"^[a-zA-Z0-9_-]+$", slug):
-        raise HTTPException(
-            400, "invalid skill slug — only alphanumeric, hyphens, underscores"
-        )
+        raise HTTPException(400, f"invalid slug: {slug!r}")
 
-    catalog_url = settings.skills_catalog_url
-    if not catalog_url:
-        raise HTTPException(
-            400,
-            "SKILLS_CATALOG_URL is not configured — cannot install from catalog",
-        )
-
-    # Find the skill entry in the catalog.
+    # Determine download URL
+    body: dict[str, Any] = {}
     try:
-        catalog = await _fetch_catalog(catalog_url)
-    except Exception as exc:
-        raise HTTPException(502, f"catalog fetch failed: {exc}") from exc
+        body = await request.json()
+    except Exception:
+        body = {}
 
-    entry = next(
-        (s for s in catalog if s.get("slug") == slug or s.get("name") == slug), None
-    )
-    if entry is None:
-        raise HTTPException(404, f"skill '{slug}' not found in catalog")
+    download_url: str | None = body.get("url") or None
 
-    download_url: str | None = entry.get("download_url") or entry.get("url")
     if not download_url:
-        raise HTTPException(502, f"catalog entry for '{slug}' has no download_url")
+        catalog_url = settings.skills_catalog_url
+        if not catalog_url:
+            raise HTTPException(
+                400, "SKILLS_CATALOG_URL not configured and no 'url' provided in body"
+            )
+        catalog = await _fetch_catalog(catalog_url)
+        entries = catalog.get("skills") or []
+        entry = next((e for e in entries if e.get("slug") == slug), None)
+        if entry is None:
+            raise HTTPException(404, f"skill {slug!r} not found in catalog")
+        download_url = entry.get("tarball_url") or entry.get("url")
+        if not download_url:
+            raise HTTPException(502, f"catalog entry for {slug!r} has no download URL")
 
-    skills_root = _skills_root()
-    skills_root.mkdir(parents=True, exist_ok=True)
-    target_dir = skills_root / slug
-
+    # Download the tarball
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(download_url)
-            resp.raise_for_status()
-            archive_bytes = resp.content
-    except Exception as exc:
-        raise HTTPException(502, f"download failed: {exc}") from exc
-
-    # Extract with path-traversal protection.
-    try:
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
-            for member in tf.getmembers():
-                if not _validate_install_path(skills_root, slug, member.name):
-                    raise HTTPException(
-                        400,
-                        f"archive member '{member.name}' would escape the skill directory — aborted",
-                    )
-            target_dir.mkdir(parents=True, exist_ok=True)
-            tf.extractall(path=str(target_dir))
+        if resp.status_code != 200:
+            raise HTTPException(
+                502, f"download failed with HTTP {resp.status_code} from {download_url}"
+            )
+        tarball_bytes = resp.content
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(502, f"archive extraction failed: {exc}") from exc
+        raise HTTPException(502, f"download error: {exc}") from exc
 
-    from api.agent.extras.skills import rescan_skills
+    # Extract into a temp dir, validate all member paths, then move to skills/
+    dest_dir = _REPO_SKILLS_ROOT / slug
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            try:
+                with tarfile.open(fileobj=io.BytesIO(tarball_bytes), mode="r:gz") as tf:
+                    # Validate every member before extracting
+                    for member in tf.getmembers():
+                        if not _validate_tar_path(member.name, slug):
+                            raise HTTPException(
+                                400,
+                                f"tar member {member.name!r} escapes skill directory",
+                            )
+                    tf.extractall(tmp_path)
+            except tarfile.TarError as exc:
+                raise HTTPException(400, f"invalid tarball: {exc}") from exc
 
-    rescan_skills()
+            # Move extracted content to skills/ root
+            extracted_skill = tmp_path / slug
+            if not extracted_skill.is_dir():
+                # Tarball may have been flat (no top-level slug/ folder)
+                extracted_skill = tmp_path
+
+            import shutil
+
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(str(extracted_skill), str(dest_dir))
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"install failed: {exc}") from exc
 
     datastore.record_audit(
         category="skills",
         event="install",
         detail=slug,
-        metadata={"source": download_url},
+        metadata={"url": download_url},
     )
     logger.info("SKILLS: installed slug={} from {}", slug, download_url)
-    return {"ok": True, "slug": slug, "path": str(target_dir)}
+    return {"ok": True, "slug": slug, "path": str(dest_dir)}
 
 
-@dashboard_router.delete("/v1/skills/install/{slug}")
-async def skills_uninstall_route(
+@dashboard_router.delete("/v1/skills/local/{slug}")
+async def uninstall_skill(
     slug: str,
     _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
-    """Uninstall a skill by removing its directory from ``skills/``."""
+    """Remove an installed skill from ``skills/{slug}``."""
+    if not re.match(r"^[a-zA-Z0-9_-]+$", slug):
+        raise HTTPException(400, f"invalid slug: {slug!r}")
+
     import shutil
 
-    if not re.match(r"^[a-zA-Z0-9_-]+$", slug):
-        raise HTTPException(400, "invalid skill slug")
+    dest_dir = _REPO_SKILLS_ROOT / slug
+    if not dest_dir.is_dir():
+        raise HTTPException(404, f"skill {slug!r} not installed")
 
-    skills_root = _skills_root()
-    target = skills_root / slug
-    if not target.is_dir():
-        raise HTTPException(404, f"skill '{slug}' is not installed")
-
-    # Validate the target stays within skills_root (safety check).
+    # Verify the target resolves inside _REPO_SKILLS_ROOT (extra safety)
     try:
-        target.resolve().relative_to(skills_root.resolve())
+        dest_dir.resolve().relative_to(_REPO_SKILLS_ROOT.resolve())
     except ValueError as exc:
         raise HTTPException(400, "path traversal detected") from exc
 
-    try:
-        shutil.rmtree(target)
-    except Exception as exc:
-        raise HTTPException(500, f"uninstall failed: {exc}") from exc
-
-    from api.agent.extras.skills import rescan_skills
-
-    rescan_skills()
-
+    shutil.rmtree(dest_dir)
     datastore.record_audit(category="skills", event="uninstall", detail=slug)
     logger.info("SKILLS: uninstalled slug={}", slug)
     return {"ok": True, "slug": slug}
@@ -1098,6 +1193,7 @@ async def start_session_job(
     session_id: str,
     body: AgentJobIn,
     request: Request,
+    user_id: CurrentUserId,
     _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
     """Kick off a background agent run for ``session_id``. Returns immediately."""
@@ -1129,6 +1225,7 @@ async def start_session_job(
         max_tokens=body.max_tokens,
         provider_getter=_provider_getter,
         metadata=metadata,
+        user_id=user_id,
     )
     return job
 
@@ -1447,3 +1544,273 @@ async def index_rescan(
 
     asyncio.create_task(_run())
     return {"ok": True}
+
+
+# ============================================================ Voice mode
+
+
+_ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+_ELEVENLABS_TIMEOUT_S = 30.0
+_WHISPER_CPP_TIMEOUT_S = 60.0
+
+# NIM ASR base URL
+_NIM_ASR_BASE_URL = "https://integrate.api.nvidia.com/v1/audio/transcriptions"
+_NIM_ASR_TIMEOUT_S = 60.0
+
+
+async def _transcribe_via_whisper_cpp(
+    audio_bytes: bytes,
+    binary: str,
+    model: str,
+) -> dict[str, Any]:
+    """Run ``whisper.cpp`` in a subprocess and return ``{text, duration_ms}``.
+
+    The audio bytes are written to a temp file; whisper.cpp reads it and
+    emits the transcript on stdout.  We pass ``--output-json`` so the output
+    is machine-readable.
+    """
+    t0 = time.monotonic()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [
+                    binary,
+                    "-m",
+                    model,
+                    "-f",
+                    tmp_path,
+                    "--output-json",
+                    "--no-timestamps",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=_WHISPER_CPP_TIMEOUT_S,
+            ),
+        )
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        if result.returncode != 0:
+            logger.warning(
+                "VOICE: whisper.cpp exited {} stderr={}",
+                result.returncode,
+                result.stderr[:200],
+            )
+            raise HTTPException(500, "whisper.cpp transcription failed")
+
+        # whisper.cpp --output-json writes a JSON file next to the input.
+        # When it also echoes JSON to stdout, parse from there first.
+        import json as _json
+
+        stdout = result.stdout.strip()
+        text = ""
+        if stdout:
+            try:
+                data = _json.loads(stdout)
+                # JSON format: {"transcription": [{"text": "..."}]}
+                segs = data.get("transcription") or []
+                text = " ".join(s.get("text", "") for s in segs).strip()
+            except _json.JSONDecodeError:
+                # Fallback: plain text output
+                text = stdout.strip()
+
+        # Also check for a sidecar .json file
+        if not text:
+            sidecar = Path(tmp_path).with_suffix(".wav.json")
+            if sidecar.is_file():
+                try:
+                    data = _json.loads(sidecar.read_text())
+                    segs = data.get("transcription") or []
+                    text = " ".join(s.get("text", "") for s in segs).strip()
+                except Exception:
+                    pass
+                finally:
+                    sidecar.unlink(missing_ok=True)
+
+        return {"text": text, "duration_ms": duration_ms}
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+async def _transcribe_via_nim(
+    audio_bytes: bytes,
+    model: str,
+    api_key: str,
+) -> dict[str, Any]:
+    """POST audio to NVIDIA NIM ASR endpoint and return ``{text, duration_ms}``."""
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=_NIM_ASR_TIMEOUT_S) as client:
+            resp = await client.post(
+                _NIM_ASR_BASE_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": ("audio.wav", audio_bytes, "audio/wav")},
+                data={"model": model},
+            )
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        if resp.status_code != 200:
+            logger.warning("VOICE: NIM ASR returned HTTP {}", resp.status_code)
+            raise HTTPException(502, "NIM transcription endpoint error")
+        data = resp.json()
+        text = data.get("text") or ""
+        return {"text": text, "duration_ms": duration_ms}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"NIM transcription failed: {exc}") from exc
+
+
+@dashboard_router.post("/v1/transcribe")
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Transcribe an uploaded audio blob.
+
+    Accepts any audio format supported by the configured backend (typically
+    webm/opus from the browser MediaRecorder API).
+
+    Routing:
+    - ``WHISPER_BINARY`` set → whisper.cpp subprocess
+    - ``WHISPER_DEVICE=nvidia_nim`` → NVIDIA NIM ASR endpoint
+    - Otherwise → HTTP 503 (voice mode not configured)
+
+    Returns ``{text: str, duration_ms: int}``.
+    """
+    if not settings.voice_note_enabled:
+        raise HTTPException(503, "voice mode is disabled (VOICE_NOTE_ENABLED=false)")
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(400, "empty audio upload")
+
+    whisper_binary = settings.whisper_binary.strip()
+    if whisper_binary:
+        return await _transcribe_via_whisper_cpp(
+            audio_bytes,
+            binary=whisper_binary,
+            model=settings.whisper_model,
+        )
+
+    if settings.whisper_device == "nvidia_nim":
+        api_key = settings.nvidia_nim_api_key.strip()
+        return await _transcribe_via_nim(
+            audio_bytes,
+            model=settings.whisper_model,
+            api_key=api_key,
+        )
+
+    raise HTTPException(
+        503,
+        "Voice transcription not configured. "
+        "Set WHISPER_BINARY (path to whisper.cpp) or WHISPER_DEVICE=nvidia_nim.",
+    )
+
+
+class TtsIn(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    voice: str = Field(default="", max_length=200)
+
+
+@dashboard_router.post("/v1/tts")
+async def text_to_speech(
+    body: TtsIn,
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> Response:
+    """Convert text to speech audio.
+
+    Provider selection via ``TTS_PROVIDER`` setting:
+    - ``mac_say``  — macOS ``say`` command (zero-cost, returns AIFF audio)
+    - ``elevenlabs`` — ElevenLabs API (mp3 audio, per-character billed)
+    - ``none`` → HTTP 503
+
+    Returns raw audio bytes with the appropriate Content-Type.
+    """
+    provider = settings.tts_provider
+    text = body.text.strip()
+
+    if not text:
+        raise HTTPException(400, "text is required")
+
+    if provider == "none":
+        raise HTTPException(503, "TTS is disabled (TTS_PROVIDER=none)")
+
+    if provider == "mac_say":
+        return await _tts_mac_say(text, voice=body.voice or "")
+
+    if provider == "elevenlabs":
+        return await _tts_elevenlabs(
+            text,
+            voice_id=body.voice or settings.elevenlabs_voice_id,
+            api_key=settings.elevenlabs_api_key,
+        )
+
+    raise HTTPException(503, f"Unknown TTS provider: {provider!r}")
+
+
+async def _tts_mac_say(text: str, voice: str) -> Response:
+    """Synthesize speech via macOS ``say`` and return AIFF bytes."""
+    with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as tmp:
+        out_path = tmp.name
+
+    cmd = ["say", "-o", out_path]
+    if voice:
+        cmd += ["-v", voice]
+    cmd.append(text)
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=30,
+            ),
+        )
+        if result.returncode != 0:
+            raise HTTPException(
+                500,
+                f"say command failed (exit {result.returncode}): "
+                + result.stderr.decode(errors="replace")[:200],
+            )
+        audio_bytes = Path(out_path).read_bytes()
+        return Response(content=audio_bytes, media_type="audio/aiff")
+    finally:
+        Path(out_path).unlink(missing_ok=True)
+
+
+async def _tts_elevenlabs(text: str, voice_id: str, api_key: str) -> Response:
+    """POST to ElevenLabs TTS API and return mp3 bytes."""
+    if not api_key:
+        raise HTTPException(503, "ELEVENLABS_API_KEY is not configured")
+    url = _ELEVENLABS_TTS_URL.format(voice_id=voice_id)
+    try:
+        async with httpx.AsyncClient(timeout=_ELEVENLABS_TIMEOUT_S) as client:
+            resp = await client.post(
+                url,
+                headers={
+                    "xi-api-key": api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": text,
+                    "model_id": "eleven_monolingual_v1",
+                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+                },
+            )
+        if resp.status_code != 200:
+            raise HTTPException(
+                502,
+                f"ElevenLabs API returned HTTP {resp.status_code}",
+            )
+        return Response(content=resp.content, media_type="audio/mpeg")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"ElevenLabs TTS failed: {exc}") from exc

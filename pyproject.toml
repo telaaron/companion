@@ -24,6 +24,7 @@ dependencies = [
     "aiohttp>=3.13.4",
     "watchdog>=4.0.0",
     "cachetools>=5.3.0",
+    "cryptography>=48.0.0",
 ]
 
 [project.scripts]
@@ -32,6 +33,7 @@ free-claude-code = "cli.entrypoints:serve"
 fcc-init = "cli.entrypoints:init"
 fcc-claude = "cli.entrypoints:launch_claude"
 ds = "cli.entrypoints:ds"
+companion = "cli.entrypoints:companion"
 
 [project.optional-dependencies]
 voice = [

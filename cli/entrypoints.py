@@ -23,6 +23,168 @@ from cli.process_registry import (
 )
 from config.settings import Settings, get_settings
 
+# ---------------------------------------------------------------------------
+# companion plugins subcommand
+# ---------------------------------------------------------------------------
+
+
+def _plugins_list(registry_url: str) -> None:
+    """Print locally installed plugins with remote version-drift indicators."""
+    from api.agent.plugin_registry import RegistryError, list_plugins
+
+    try:
+        rows = list_plugins(registry_url=registry_url)
+    except RegistryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    if not rows:
+        print("No plugins installed and registry is empty.")
+        return
+
+    header = f"{'NAME':<20}  {'LOCAL':<10}  {'REMOTE':<10}  STATUS"
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        print(
+            f"{row['name']:<20}  {row['local_version'] or '-':<10}  "
+            f"{row['remote_version'] or '-':<10}  {row['status']}"
+        )
+
+
+def _plugins_search(query: str, registry_url: str) -> None:
+    """Search the remote catalog for plugins matching *query*."""
+    from api.agent.plugin_registry import RegistryError, search_plugins
+
+    try:
+        results = search_plugins(query, registry_url=registry_url)
+    except RegistryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    if not results:
+        print(f"No plugins found matching '{query}'.")
+        return
+
+    header = f"{'NAME':<20}  {'VERSION':<10}  KIND"
+    print(header)
+    print("-" * len(header))
+    for entry in results:
+        print(f"{entry.name:<20}  {entry.version:<10}  {entry.kind}")
+
+
+def _plugins_install(name: str, registry_url: str) -> None:
+    """Download, verify (sha256 + Ed25519), and install a plugin."""
+    from api.agent.plugin_registry import RegistryError, install_plugin
+
+    try:
+        dest = install_plugin(name, registry_url=registry_url)
+    except RegistryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    print(f"Plugin '{name}' installed to {dest}.")
+    print("Restart the server to load the new plugin.")
+
+
+def _plugins_remove(name: str) -> None:
+    """Remove a locally installed plugin."""
+    from api.agent.plugin_registry import RegistryError, remove_plugin
+
+    try:
+        dest = remove_plugin(name)
+    except RegistryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    print(f"Plugin '{name}' removed ({dest}).")
+    print("Restart the server to apply the change.")
+
+
+def _plugins_update(name: str, registry_url: str) -> None:
+    """Re-install (update) an already-installed plugin."""
+    _plugins_install(name, registry_url)
+
+
+def _plugins_main(argv: list[str]) -> None:
+    """Entry point for ``companion plugins <subcommand> …``."""
+    from api.agent.plugin_registry import DEFAULT_REGISTRY_URL
+
+    # Minimal argument parsing without adding an argparse dependency.
+    registry_url = DEFAULT_REGISTRY_URL
+    remaining = argv
+
+    # Allow --registry-url <url> anywhere before the subcommand.
+    if "--registry-url" in remaining:
+        idx = remaining.index("--registry-url")
+        if idx + 1 >= len(remaining):
+            print("Error: --registry-url requires an argument.", file=sys.stderr)
+            raise SystemExit(1)
+        registry_url = remaining[idx + 1]
+        remaining = remaining[:idx] + remaining[idx + 2 :]
+
+    if not remaining:
+        print(
+            "Usage: companion plugins <list|search|install|remove|update> [args]",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    subcmd, *rest = remaining
+
+    if subcmd == "list":
+        _plugins_list(registry_url)
+    elif subcmd == "search":
+        if not rest:
+            print("Usage: companion plugins search <query>", file=sys.stderr)
+            raise SystemExit(1)
+        _plugins_search(rest[0], registry_url)
+    elif subcmd == "install":
+        if not rest:
+            print("Usage: companion plugins install <name>", file=sys.stderr)
+            raise SystemExit(1)
+        _plugins_install(rest[0], registry_url)
+    elif subcmd == "remove":
+        if not rest:
+            print("Usage: companion plugins remove <name>", file=sys.stderr)
+            raise SystemExit(1)
+        _plugins_remove(rest[0])
+    elif subcmd == "update":
+        if not rest:
+            print("Usage: companion plugins update <name>", file=sys.stderr)
+            raise SystemExit(1)
+        _plugins_update(rest[0], registry_url)
+    else:
+        print(
+            f"Unknown subcommand '{subcmd}'. "
+            "Use: list, search, install, remove, update",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+
+def companion() -> None:
+    """Top-level ``companion`` CLI dispatcher.
+
+    Currently supports: ``companion plugins <subcommand> …``
+    """
+    args = sys.argv[1:]
+    if not args:
+        print("Usage: companion <command> [args]", file=sys.stderr)
+        print("Commands: plugins", file=sys.stderr)
+        raise SystemExit(1)
+
+    cmd, *rest = args
+    if cmd == "plugins":
+        _plugins_main(rest)
+    else:
+        print(
+            f"Unknown command '{cmd}'. Available commands: plugins",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+
 PROXY_PREFLIGHT_PATH = "/health"
 PROXY_PREFLIGHT_TIMEOUT_SECONDS = 1.5
 SERVER_GRACEFUL_SHUTDOWN_SECONDS = 5

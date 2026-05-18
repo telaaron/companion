@@ -122,6 +122,23 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
                             {"type": "text", "text": shared},
                             *existing,
                         ]
+                # Inject pinned memories as bullet-point context.
+                memories = datastore.list_memories(project_id)
+                if memories:
+                    bullets = "\n".join(f"- {m['content']}" for m in memories)
+                    memory_block = (
+                        "Memory you must respect for this project:\n" + bullets
+                    )
+                    current_sys = payload.get("system")
+                    if current_sys is None:
+                        payload["system"] = memory_block
+                    elif isinstance(current_sys, str):
+                        payload["system"] = current_sys + "\n\n" + memory_block
+                    elif isinstance(current_sys, list):
+                        payload["system"] = [
+                            *current_sys,
+                            {"type": "text", "text": memory_block},
+                        ]
 
         request = _build_messages_request(payload)
 

@@ -43,7 +43,7 @@ def _connect():
         conn.close()
 
 
-_SCHEMA_VERSION = 2  # bump when adding new migrations below
+_SCHEMA_VERSION = 3  # bump when adding new migrations below
 
 
 def init_schema() -> None:
@@ -180,6 +180,20 @@ def init_schema() -> None:
                     ts UNINDEXED,
                     tokenize='porter unicode61'
                 );
+
+                CREATE TABLE IF NOT EXISTS project_memories (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id)
+                        ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    source_session_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT 'default'
+                );
+                CREATE INDEX IF NOT EXISTS idx_project_memories_project
+                    ON project_memories(project_id);
+                CREATE INDEX IF NOT EXISTS idx_project_memories_project_created
+                    ON project_memories(project_id, created_at DESC);
                 """
             )
             # ----------------------------------------------------------
@@ -232,6 +246,30 @@ def init_schema() -> None:
                         conn.execute(idx_sql)
                 conn.execute("PRAGMA user_version = 2")
                 current_version = 2
+
+            if current_version < 3:
+                # v3: add project_memories table for cross-session pinned
+                # memories. The CREATE TABLE IF NOT EXISTS above handles fresh
+                # DBs; this block ensures older DBs get the table too.
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.executescript(
+                        """
+                        CREATE TABLE IF NOT EXISTS project_memories (
+                            id TEXT PRIMARY KEY,
+                            project_id TEXT NOT NULL,
+                            content TEXT NOT NULL,
+                            source_session_id TEXT,
+                            created_at INTEGER NOT NULL,
+                            user_id TEXT NOT NULL DEFAULT 'default'
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_project_memories_project
+                            ON project_memories(project_id);
+                        CREATE INDEX IF NOT EXISTS idx_project_memories_project_created
+                            ON project_memories(project_id, created_at DESC);
+                        """
+                    )
+                conn.execute("PRAGMA user_version = 3")
+                current_version = 3
 
             _INIT_DONE = True
         finally:
@@ -931,6 +969,85 @@ def memory_delete_path(path: str) -> None:
             )
     except Exception as exc:
         logger.warning("MEMORY: delete_path failed ({})", exc)
+
+
+# ============================================================ Project memories (pinned)
+
+_MEMORIES_HARD_CAP = 10
+_MEMORIES_CHAR_CAP = 4000
+_MEMORY_CONTENT_MAX = 4000
+
+
+def pin_memory(
+    *,
+    project_id: str,
+    content: str,
+    source_session_id: str | None = None,
+    user_id: str = "default",
+) -> dict[str, Any]:
+    """Insert a pinned memory for *project_id* and return the new row.
+
+    Raises ``ValueError`` if the project has reached the hard cap (10 pins) or
+    the combined content would exceed 4 000 characters.
+    """
+    content = content.strip()
+    if not content:
+        raise ValueError("content must not be empty")
+    if len(content) > _MEMORY_CONTENT_MAX:
+        raise ValueError(
+            f"content exceeds maximum length of {_MEMORY_CONTENT_MAX} characters"
+        )
+
+    with _connect() as conn:
+        existing = conn.execute(
+            "SELECT id, content FROM project_memories WHERE project_id=? ORDER BY created_at",
+            (project_id,),
+        ).fetchall()
+        if len(existing) >= _MEMORIES_HARD_CAP:
+            raise ValueError(
+                f"project has reached the maximum of {_MEMORIES_HARD_CAP} pinned memories"
+            )
+        combined_len = sum(len(r["content"]) for r in existing) + len(content)
+        if combined_len > _MEMORIES_CHAR_CAP:
+            raise ValueError(
+                f"combined memory content would exceed {_MEMORIES_CHAR_CAP} characters"
+            )
+        mid = f"mem_{uuid.uuid4().hex[:14]}"
+        now = _ts()
+        conn.execute(
+            """
+            INSERT INTO project_memories
+              (id, project_id, content, source_session_id, created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (mid, project_id, content, source_session_id, now, user_id),
+        )
+    row = get_memory(mid)
+    assert row is not None
+    return row
+
+
+def get_memory(memory_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM project_memories WHERE id=?", (memory_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_memories(project_id: str) -> list[dict[str, Any]]:
+    """Return all pinned memories for *project_id*, oldest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM project_memories WHERE project_id=? ORDER BY created_at",
+            (project_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_memory(memory_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM project_memories WHERE id=?", (memory_id,))
 
 
 def db_path() -> Path:

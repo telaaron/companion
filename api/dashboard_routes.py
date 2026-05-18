@@ -134,6 +134,57 @@ async def delete_project_route(
     return {"ok": True}
 
 
+# ============================================================ Project memories
+
+
+class MemoryIn(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+    source_session_id: str | None = None
+
+
+@dashboard_router.get("/v1/projects/{project_id}/memories")
+async def list_project_memories(
+    project_id: str, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    if datastore.get_project(project_id) is None:
+        raise HTTPException(404, "project not found")
+    return {"memories": datastore.list_memories(project_id)}
+
+
+@dashboard_router.post("/v1/projects/{project_id}/memories")
+async def pin_project_memory(
+    project_id: str,
+    body: MemoryIn,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    if datastore.get_project(project_id) is None:
+        raise HTTPException(404, "project not found")
+    try:
+        memory = datastore.pin_memory(
+            project_id=project_id,
+            content=body.content,
+            source_session_id=body.source_session_id,
+            user_id=user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return memory
+
+
+@dashboard_router.delete("/v1/projects/{project_id}/memories/{memory_id}")
+async def delete_project_memory(
+    project_id: str,
+    memory_id: str,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    mem = datastore.get_memory(memory_id)
+    if mem is None or mem.get("project_id") != project_id:
+        raise HTTPException(404, "memory not found")
+    datastore.delete_memory(memory_id)
+    return {"ok": True}
+
+
 # ============================================================ Sessions
 
 

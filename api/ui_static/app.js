@@ -1091,6 +1091,7 @@
       !msg.error
     ) {
       attachRegenerateButton(wrap, ctx);
+      attachPinButton(wrap, msg, ctx);
     }
     return wrap;
   }
@@ -1176,6 +1177,48 @@
       cursor = cursor.previousElementSibling;
     }
     return "";
+  }
+
+  // attachPinButton: 📌 kebab-menu action on finalized assistant bubbles.
+  // Only shown when the session belongs to a project.
+  function attachPinButton(messageNode, msg, ctx) {
+    const projectId = ctx.session && ctx.session.project_id;
+    if (!projectId) return;
+
+    const btn = el(
+      "button",
+      {
+        class: "pin-btn",
+        type: "button",
+        title: "Pin to project memory",
+      },
+      "📌"
+    );
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const body = messageNode.querySelector(".message-body");
+      const content = body ? body.innerText.trim() : (msg.content || "").trim();
+      if (!content) {
+        toastShow("Nothing to pin — empty message.", "error");
+        return;
+      }
+      try {
+        await api(
+          `/v1/projects/${encodeURIComponent(projectId)}/memories`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              content: content.slice(0, 4000),
+              source_session_id: ctx.session.id,
+            }),
+          }
+        );
+        toastShow("Pinned to project memory ✓", "ok");
+      } catch (err) {
+        toastShow(`Pin failed: ${err.message}`, "error");
+      }
+    });
+    messageNode.appendChild(btn);
   }
 
   // localStorage helpers: track the in-flight job_id per session so the chat
@@ -1663,6 +1706,92 @@
         }
       }
       card.appendChild(sessList);
+
+      // Memories panel: list pinned memories with delete + session link.
+      const memPanel = el("div", { class: "project-memories" });
+      const memTitle = el("div", { class: "project-memories-title" }, "📌 Memories");
+      memPanel.appendChild(memTitle);
+
+      async function refreshMemories() {
+        // Remove all children except the title.
+        while (memPanel.children.length > 1) memPanel.removeChild(memPanel.lastChild);
+        let mems;
+        try {
+          const resp = await api(
+            `/v1/projects/${encodeURIComponent(p.id)}/memories`
+          );
+          mems = resp.memories || [];
+        } catch {
+          mems = [];
+        }
+        if (!mems.length) {
+          memPanel.appendChild(
+            el(
+              "div",
+              { class: "project-sessions-empty" },
+              "No pinned memories yet — use the 📌 button on an assistant reply"
+            )
+          );
+          return;
+        }
+        for (const m of mems) {
+          const row = el("div", { class: "memory-row" });
+          const snippet = el(
+            "div",
+            { class: "memory-content" },
+            m.content.length > 120 ? m.content.slice(0, 120) + "…" : m.content
+          );
+          const meta = el(
+            "div",
+            { class: "memory-meta" },
+            fmtTime(m.created_at)
+          );
+          if (m.source_session_id) {
+            const link = el(
+              "button",
+              {
+                class: "memory-link",
+                type: "button",
+                title: "Open source session",
+                onclick: (e) => {
+                  e.stopPropagation();
+                  activeSessionId = m.source_session_id;
+                  setRoute("chat");
+                },
+              },
+              "↗"
+            );
+            meta.appendChild(link);
+          }
+          const delBtn = el(
+            "button",
+            {
+              class: "icon-btn icon-btn-danger",
+              type: "button",
+              title: "Delete memory",
+              onclick: async (e) => {
+                e.stopPropagation();
+                try {
+                  await api(
+                    `/v1/projects/${encodeURIComponent(p.id)}/memories/${encodeURIComponent(m.id)}`,
+                    { method: "DELETE" }
+                  );
+                  toastShow("Memory deleted", "ok");
+                  refreshMemories();
+                } catch (err) {
+                  toastShow(`Delete failed: ${err.message}`, "error");
+                }
+              },
+            },
+            "✕"
+          );
+          row.append(snippet, meta, delBtn);
+          memPanel.appendChild(row);
+        }
+      }
+
+      refreshMemories();
+      card.appendChild(memPanel);
       body.appendChild(card);
     }
   }

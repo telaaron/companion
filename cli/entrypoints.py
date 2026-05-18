@@ -163,23 +163,133 @@ def _plugins_main(argv: list[str]) -> None:
         raise SystemExit(1)
 
 
+async def _build_job_runner(settings: Settings):
+    """Build the async job-runner callable that wraps the jobs API."""
+    import json
+
+    from api import datastore
+    from api.agent.jobs import event_stream, start_job
+    from api.dependencies import resolve_provider
+
+    provider_type = settings.provider_type
+
+    def _provider_getter():
+        return resolve_provider(provider_type, app=None, settings=settings)
+
+    def _extract_text(raw: str) -> str:
+        parts: list[str] = []
+        for line in raw.splitlines():
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            try:
+                ev = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("type") == "content_block_delta":
+                delta = ev.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    parts.append(delta.get("text", ""))
+        return "".join(parts)
+
+    async def _run_job(session_id: str, text: str, model: str, user_id: str) -> str:
+        messages = [{"role": "user", "content": text}]
+        stored = datastore.list_messages(session_id)
+        if stored:
+            history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in stored
+                if m.get("role") in ("user", "assistant")
+            ]
+            messages = [*history, messages[0]]
+        job = start_job(
+            session_id=session_id,
+            project_id=None,
+            model=model,
+            messages=messages,
+            system=None,
+            max_tokens=4096,
+            provider_getter=_provider_getter,
+            user_id=user_id,
+        )
+        job_id = job["id"]
+        collected: list[str] = []
+        async for chunk in event_stream(job_id, after_seq=-1):
+            part = _extract_text(chunk)
+            if part:
+                collected.append(part)
+            if "job_finished" in chunk or "job_error" in chunk:
+                break
+        return "".join(collected)
+
+    return _run_job
+
+
+def _discord_bot_main() -> None:
+    """Entry point for ``companion discord-bot``."""
+    import asyncio
+
+    from api import datastore
+    from messaging.discord_bot_runner import run_bot
+
+    settings = get_settings()
+    token = settings.discord_bot_token
+    if not token:
+        print(
+            "DISCORD_BOT_TOKEN is not set. Set it in your .env file.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    def _session_upsert(title: str, model: str, user_id: str, session_id):
+        return datastore.upsert_session(
+            session_id=session_id,
+            title=title,
+            model=model,
+            user_id=user_id,
+        )
+
+    async def _main():
+        job_runner = await _build_job_runner(settings)
+        await run_bot(
+            token=token,
+            allowed_guild_ids=settings.discord_allowed_guild_ids,
+            allowed_channel_ids=settings.discord_allowed_channel_ids,
+            default_model=settings.model,
+            user_id_for_jobs=settings.discord_user_id_for_jobs or "default",
+            job_runner=job_runner,
+            session_upsert=_session_upsert,
+            session_get=datastore.get_session,
+        )
+
+    import contextlib
+
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(_main())
+
+
 def companion() -> None:
     """Top-level ``companion`` CLI dispatcher.
 
     Currently supports: ``companion plugins <subcommand> …``
+                        ``companion discord-bot``
     """
     args = sys.argv[1:]
     if not args:
         print("Usage: companion <command> [args]", file=sys.stderr)
-        print("Commands: plugins", file=sys.stderr)
+        print("Commands: plugins, discord-bot", file=sys.stderr)
         raise SystemExit(1)
 
     cmd, *rest = args
     if cmd == "plugins":
         _plugins_main(rest)
+    elif cmd == "discord-bot":
+        _discord_bot_main()
     else:
         print(
-            f"Unknown command '{cmd}'. Available commands: plugins",
+            f"Unknown command '{cmd}'. Available commands: plugins, discord-bot",
             file=sys.stderr,
         )
         raise SystemExit(1)

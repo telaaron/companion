@@ -523,6 +523,21 @@ class Settings(BaseSettings):
     allowed_discord_channels: str | None = Field(
         default=None, validation_alias="ALLOWED_DISCORD_CHANNELS"
     )
+    discord_allowed_guild_ids: str = Field(
+        default="",
+        validation_alias="DISCORD_ALLOWED_GUILD_IDS",
+        description="Comma-separated Discord guild (server) IDs the bot will respond in.",
+    )
+    discord_allowed_channel_ids: str = Field(
+        default="",
+        validation_alias="DISCORD_ALLOWED_CHANNEL_IDS",
+        description="Comma-separated Discord channel IDs the bot will respond in.",
+    )
+    discord_user_id_for_jobs: str = Field(
+        default="default",
+        validation_alias="DISCORD_USER_ID_FOR_JOBS",
+        description="Which Companion user_id to bill agent jobs to from Discord.",
+    )
     claude_workspace: str = "./agent_workspace"
     allowed_dir: str = ""
     claude_cli_bin: str = Field(default="claude", validation_alias="CLAUDE_CLI_BIN")

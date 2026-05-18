@@ -113,6 +113,7 @@ class AppRuntime:
     _provider_registry: ProviderRegistry | None = field(default=None, init=False)
     _indexer: Any | None = field(default=None, init=False)
     _index_paths: list[str] = field(default_factory=list, init=False)
+    _routine_scheduler: Any | None = field(default=None, init=False)
     messaging_platform: MessagingPlatform | None = None
     message_handler: ClaudeMessageHandler | None = None
     cli_manager: CLISessionManager | None = None
@@ -139,6 +140,7 @@ class AppRuntime:
             await self._start_messaging_if_configured()
             await self._bootstrap_mcp_servers()
             await self._start_indexer_if_configured()
+            self._start_routine_scheduler()
             self._publish_state()
             logger.info("Server URL: {}", root_url)
             logger.info("Admin UI: {} (local-only)", admin_url)
@@ -232,6 +234,18 @@ class AppRuntime:
         except Exception as exc:
             logger.warning("INDEXER: failed to start: {}", exc)
 
+    def _start_routine_scheduler(self) -> None:
+        """Start the RoutineScheduler tick loop."""
+        try:
+            from api.agent.routines import RoutineScheduler
+
+            scheduler = RoutineScheduler()
+            scheduler.start()
+            self._routine_scheduler = scheduler
+            self.app.state.routine_scheduler = scheduler
+        except Exception as exc:
+            logger.warning("RoutineScheduler: failed to start: {}", exc)
+
     async def shutdown(self) -> None:
         verbose = self.settings.log_api_error_tracebacks
         if self.message_handler is not None:
@@ -247,6 +261,12 @@ class AppRuntime:
                     )
 
         logger.info("Shutdown requested, cleaning up...")
+        if self._routine_scheduler is not None:
+            await best_effort(
+                "routine_scheduler.stop",
+                self._routine_scheduler.stop(),
+                log_verbose_errors=verbose,
+            )
         if self._indexer is not None:
             await best_effort(
                 "indexer.stop",

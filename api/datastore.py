@@ -43,7 +43,7 @@ def _connect():
         conn.close()
 
 
-_SCHEMA_VERSION = 3  # bump when adding new migrations below
+_SCHEMA_VERSION = 4  # bump when adding new migrations below
 
 
 def init_schema() -> None:
@@ -194,6 +194,37 @@ def init_schema() -> None:
                     ON project_memories(project_id);
                 CREATE INDEX IF NOT EXISTS idx_project_memories_project_created
                     ON project_memories(project_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS routines (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    trigger_type TEXT NOT NULL DEFAULT 'cron',
+                    trigger_config TEXT NOT NULL DEFAULT '{}',
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    project_id TEXT,
+                    user_id TEXT NOT NULL DEFAULT 'default',
+                    last_run_ms INTEGER,
+                    next_run_ms INTEGER,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_routines_user
+                    ON routines(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_routines_next_run
+                    ON routines(enabled, next_run_ms);
+
+                CREATE TABLE IF NOT EXISTS routine_runs (
+                    id TEXT PRIMARY KEY,
+                    routine_id TEXT NOT NULL REFERENCES routines(id)
+                        ON DELETE CASCADE,
+                    job_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    started_at INTEGER NOT NULL,
+                    finished_at INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
+                    ON routine_runs(routine_id, started_at DESC);
                 """
             )
             # ----------------------------------------------------------
@@ -270,6 +301,48 @@ def init_schema() -> None:
                     )
                 conn.execute("PRAGMA user_version = 3")
                 current_version = 3
+
+            if current_version < 4:
+                # v4: add routines + routine_runs tables for the scheduler.
+                # The CREATE TABLE IF NOT EXISTS above handles fresh DBs;
+                # this block ensures older DBs get the tables too.
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.executescript(
+                        """
+                        CREATE TABLE IF NOT EXISTS routines (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            description TEXT NOT NULL DEFAULT '',
+                            trigger_type TEXT NOT NULL DEFAULT 'cron',
+                            trigger_config TEXT NOT NULL DEFAULT '{}',
+                            payload TEXT NOT NULL DEFAULT '{}',
+                            enabled INTEGER NOT NULL DEFAULT 1,
+                            project_id TEXT,
+                            user_id TEXT NOT NULL DEFAULT 'default',
+                            last_run_ms INTEGER,
+                            next_run_ms INTEGER,
+                            created_at INTEGER NOT NULL
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_routines_user
+                            ON routines(user_id, created_at DESC);
+                        CREATE INDEX IF NOT EXISTS idx_routines_next_run
+                            ON routines(enabled, next_run_ms);
+
+                        CREATE TABLE IF NOT EXISTS routine_runs (
+                            id TEXT PRIMARY KEY,
+                            routine_id TEXT NOT NULL REFERENCES routines(id)
+                                ON DELETE CASCADE,
+                            job_id TEXT,
+                            status TEXT NOT NULL DEFAULT 'pending',
+                            started_at INTEGER NOT NULL,
+                            finished_at INTEGER
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_routine_runs_routine
+                            ON routine_runs(routine_id, started_at DESC);
+                        """
+                    )
+                conn.execute("PRAGMA user_version = 4")
+                current_version = 4
 
             _INIT_DONE = True
         finally:
@@ -1069,3 +1142,182 @@ def all_paths_for_tests() -> Iterable[Path]:
     yield _DB_PATH
     yield _DB_PATH.with_suffix(_DB_PATH.suffix + "-wal")
     yield _DB_PATH.with_suffix(_DB_PATH.suffix + "-shm")
+
+
+# ============================================================ Routines
+
+
+def create_routine(
+    *,
+    name: str,
+    description: str = "",
+    trigger_type: str = "cron",
+    trigger_config: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+    enabled: bool = True,
+    project_id: str | None = None,
+    user_id: str = "default",
+    next_run_ms: int | None = None,
+) -> dict[str, Any]:
+    """Insert a new routine and return the persisted row."""
+    rid = f"rtn_{uuid.uuid4().hex[:14]}"
+    now = _ts()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO routines
+              (id, name, description, trigger_type, trigger_config,
+               payload, enabled, project_id, user_id, last_run_ms,
+               next_run_ms, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            """,
+            (
+                rid,
+                name,
+                description,
+                trigger_type,
+                json.dumps(trigger_config or {}),
+                json.dumps(payload or {}),
+                1 if enabled else 0,
+                project_id,
+                user_id,
+                next_run_ms,
+                now,
+            ),
+        )
+    row = get_routine(rid)
+    assert row is not None
+    return row
+
+
+def get_routine(routine_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM routines WHERE id=?", (routine_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_routine(
+    routine_id: str,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    trigger_type: str | None = None,
+    trigger_config: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+    enabled: bool | None = None,
+    next_run_ms: int | None = None,
+    last_run_ms: int | None = None,
+) -> dict[str, Any] | None:
+    """Partial update of a routine. Only provided (non-None) fields change."""
+    sets: list[str] = []
+    args: list[Any] = []
+    if name is not None:
+        sets.append("name=?")
+        args.append(name)
+    if description is not None:
+        sets.append("description=?")
+        args.append(description)
+    if trigger_type is not None:
+        sets.append("trigger_type=?")
+        args.append(trigger_type)
+    if trigger_config is not None:
+        sets.append("trigger_config=?")
+        args.append(json.dumps(trigger_config))
+    if payload is not None:
+        sets.append("payload=?")
+        args.append(json.dumps(payload))
+    if enabled is not None:
+        sets.append("enabled=?")
+        args.append(1 if enabled else 0)
+    if next_run_ms is not None:
+        sets.append("next_run_ms=?")
+        args.append(next_run_ms)
+    if last_run_ms is not None:
+        sets.append("last_run_ms=?")
+        args.append(last_run_ms)
+    if not sets:
+        return get_routine(routine_id)
+    args.append(routine_id)
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE routines SET {', '.join(sets)} WHERE id=?",
+            args,
+        )
+    return get_routine(routine_id)
+
+
+def list_routines(
+    *,
+    user_id: str | None = None,
+    enabled_only: bool = False,
+    due_before_ms: int | None = None,
+) -> list[dict[str, Any]]:
+    where: list[str] = []
+    args: list[Any] = []
+    if user_id is not None:
+        where.append("user_id=?")
+        args.append(user_id)
+    if enabled_only:
+        where.append("enabled=1")
+    if due_before_ms is not None:
+        where.append("next_run_ms <= ?")
+        args.append(due_before_ms)
+    sql = "SELECT * FROM routines"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC"
+    with _connect() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_routine(routine_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM routines WHERE id=?", (routine_id,))
+
+
+def record_routine_run(
+    *,
+    routine_id: str,
+    job_id: str | None = None,
+    status: str = "pending",
+) -> dict[str, Any]:
+    """Insert a routine_runs row and return it."""
+    run_id = f"rrun_{uuid.uuid4().hex[:12]}"
+    now = _ts()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO routine_runs (id, routine_id, job_id, status, started_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (run_id, routine_id, job_id, status, now),
+        )
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM routine_runs WHERE id=?", (run_id,)
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def update_routine_run(
+    run_id: str,
+    *,
+    status: str,
+    job_id: str | None = None,
+    finished_at: int | None = None,
+) -> None:
+    now = finished_at if finished_at is not None else _ts()
+    with _connect() as conn:
+        if job_id is not None:
+            conn.execute(
+                "UPDATE routine_runs SET status=?, job_id=?, finished_at=? WHERE id=?",
+                (status, job_id, now, run_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE routine_runs SET status=?, finished_at=? WHERE id=?",
+                (status, now, run_id),
+            )

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import re
 import subprocess
@@ -1431,6 +1432,57 @@ async def stream_job_events(
             "Connection": "keep-alive",
         },
     )
+
+
+# ============================================================ Routines
+
+
+@dashboard_router.get("/v1/routines")
+async def list_routines_route(
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return all routines for the current user."""
+    return {"routines": datastore.list_routines(user_id=user_id)}
+
+
+@dashboard_router.post("/v1/routines/{routine_id}/trigger")
+async def trigger_routine(
+    routine_id: str,
+    request: Request,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Webhook trigger: fire a routine immediately.
+
+    The caller must supply the ``X-Routine-Secret`` header with the value
+    stored in ``trigger_config.secret``.  Comparison is constant-time to
+    prevent timing attacks.  Returns the created job row on success.
+    """
+    import secrets as _secrets
+
+    routine = datastore.get_routine(routine_id)
+    if routine is None:
+        raise HTTPException(404, "routine not found")
+
+    trigger_config: dict[str, Any] = json.loads(routine.get("trigger_config") or "{}")
+    expected_secret: str = trigger_config.get("secret") or ""
+    if expected_secret:
+        supplied = request.headers.get("x-routine-secret") or ""
+        if not _secrets.compare_digest(
+            supplied.encode("utf-8"), expected_secret.encode("utf-8")
+        ):
+            raise HTTPException(403, "invalid routine secret")
+
+    from api.agent.routines import trigger_routine_now
+
+    try:
+        job = await trigger_routine_now(routine_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"trigger failed: {exc}") from exc
+
+    return {"ok": True, "job": job}
 
 
 # ============================================================ Provider test

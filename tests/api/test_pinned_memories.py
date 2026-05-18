@@ -117,14 +117,14 @@ def test_memory_source_session(fresh_db) -> None:
     assert mem["source_session_id"] == sess["id"]
 
 
-def test_schema_version_is_3(fresh_db) -> None:
+def test_schema_version_is_4(fresh_db) -> None:
     import sqlite3
 
     db_path = datastore.db_path()
     conn = sqlite3.connect(str(db_path))
     row = conn.execute("PRAGMA user_version").fetchone()
     conn.close()
-    assert row[0] == 3
+    assert row[0] == 4
 
 
 def test_migration_idempotent(tmp_path: Path) -> None:

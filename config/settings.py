@@ -555,6 +555,33 @@ class Settings(BaseSettings):
         default="", validation_alias="ANTHROPIC_AUTH_TOKEN"
     )
 
+    # ==================== Cloudflare Access Auth ====================
+    # When both cf_access_aud and cf_access_team are set, requests bearing a
+    # valid ``Cf-Access-Jwt-Assertion`` header are accepted in addition to
+    # (or instead of) Bearer tokens.  This is the prerequisite for Cloudflare
+    # Tunnel exposure (item 18).
+    cf_access_aud: str = Field(
+        default="",
+        validation_alias="CF_ACCESS_AUD",
+        description="Cloudflare Access audience tag (application AUD).",
+    )
+    cf_access_team: str = Field(
+        default="",
+        validation_alias="CF_ACCESS_TEAM",
+        description="Cloudflare Access team domain (e.g. myteam.cloudflareaccess.com).",
+    )
+    # When false, anonymous requests are allowed even if credentials are
+    # configured.  Defaults to true when the bind host is non-loopback.
+    # Set explicitly to override the automatic loopback detection.
+    auth_required: bool | None = Field(
+        default=None,
+        validation_alias="AUTH_REQUIRED",
+        description=(
+            "Whether auth is enforced.  Defaults to false on loopback (127.0.0.1/::1), "
+            "true otherwise.  Set to false to allow unauthenticated access on any host."
+        ),
+    )
+
     @model_validator(mode="before")
     @classmethod
     def reject_removed_env_vars(cls, data: Any) -> Any:
@@ -589,6 +616,13 @@ class Settings(BaseSettings):
     @field_validator("max_message_log_entries_per_chat", mode="before")
     @classmethod
     def parse_optional_log_cap(cls, v: Any) -> Any:
+        if v == "" or v is None:
+            return None
+        return v
+
+    @field_validator("auth_required", mode="before")
+    @classmethod
+    def parse_optional_auth_required(cls, v: Any) -> Any:
         if v == "" or v is None:
             return None
         return v

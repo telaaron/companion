@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Request
 from loguru import logger
 from starlette.applications import Starlette
 
+from api.auth import Principal, verify_cf_access_jwt
 from config.settings import Settings
 from config.settings import get_settings as _get_settings
 from core.anthropic import get_user_facing_error_message
@@ -89,42 +90,72 @@ def get_provider_for_type(provider_type: str) -> BaseProvider:
     return resolve_provider(provider_type, app=None, settings=get_settings())
 
 
-def require_api_key(
+async def require_api_key(
     request: Request, settings: Settings = Depends(get_settings)
-) -> None:
-    """Require a server API key (Anthropic-style).
+) -> Principal:
+    """Require a server API key or Cloudflare Access JWT.
 
-    Checks `x-api-key` header or `Authorization: Bearer ...` against
-    `Settings.anthropic_auth_token`. If `ANTHROPIC_AUTH_TOKEN` is empty, this is a no-op.
+    Resolution order:
+    1. ``x-api-key`` / ``Authorization: Bearer`` / ``anthropic-auth-token`` header
+       compared constant-time against ``Settings.anthropic_auth_token``.
+    2. ``Cf-Access-Jwt-Assertion`` header verified via Cloudflare JWKS when
+       ``cf_access_aud`` and ``cf_access_team`` are configured.
+    3. If ``auth_required`` is false and the bind host is loopback, allow
+       anonymous access (returns a synthetic Principal).
+
+    Returns a :class:`~api.auth.Principal` describing the authenticated caller.
+    Anonymous requests always get ``401 Unauthorized``.
     """
     anthropic_auth_token = settings.anthropic_auth_token
-    if not anthropic_auth_token:
-        # No API key configured -> allow
-        return
+    _raw_cf_aud = getattr(settings, "cf_access_aud", "")
+    _raw_cf_team = getattr(settings, "cf_access_team", "")
+    cf_access_aud: str = _raw_cf_aud if isinstance(_raw_cf_aud, str) else ""
+    cf_access_team: str = _raw_cf_team if isinstance(_raw_cf_team, str) else ""
+    _cf_configured = bool(cf_access_aud and cf_access_team)
 
+    # --- Bearer / X-API-Key path ---
     header = (
         request.headers.get("x-api-key")
         or request.headers.get("authorization")
         or request.headers.get("anthropic-auth-token")
     )
-    if not header:
-        raise HTTPException(status_code=401, detail="Missing API key")
+    if header:
+        token = header
+        if header.lower().startswith("bearer "):
+            token = header.split(" ", 1)[1]
+        # Strip trailing ":model" appended by some clients
+        if token and ":" in token:
+            token = token.split(":", 1)[0]
 
-    # Support both raw key in X-API-Key and Bearer token in Authorization
-    token = header
-    if header.lower().startswith("bearer "):
-        token = header.split(" ", 1)[1]
+        if anthropic_auth_token and secrets.compare_digest(
+            token.encode("utf-8"), anthropic_auth_token.encode("utf-8")
+        ):
+            return Principal(kind="bearer", user_id="default", email=None)
 
-    # Strip anything after the first colon to handle tokens with appended model names
-    if token and ":" in token:
-        token = token.split(":", 1)[0]
+        # If a token was supplied but doesn't match, fall through only when
+        # CF Access is also configured — otherwise reject immediately.
+        if not _cf_configured:
+            if not anthropic_auth_token:
+                # Auth not configured at all — allow (no-op mode)
+                return Principal(kind="bearer", user_id="default", email=None)
+            raise HTTPException(status_code=401, detail="Invalid API key")
 
-    # Constant-time comparison to avoid leaking the configured token via
-    # response-time differences on a per-byte mismatch (CWE-208).
-    if not secrets.compare_digest(
-        token.encode("utf-8"), anthropic_auth_token.encode("utf-8")
-    ):
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    # --- Cloudflare Access JWT path ---
+    cf_token = request.headers.get("cf-access-jwt-assertion")
+    if cf_token and _cf_configured:
+        claims = await verify_cf_access_jwt(cf_token, cf_access_aud, cf_access_team)
+        if claims:
+            email: str | None = claims.get("email")
+            user_id = email or claims.get("sub", "cf_user")
+            return Principal(kind="cf_access", user_id=user_id, email=email)
+        raise HTTPException(status_code=401, detail="Invalid Cloudflare Access token")
+
+    # --- No credential supplied at all ---
+    if not anthropic_auth_token and not _cf_configured:
+        # Auth not configured — allow anonymous
+        return Principal(kind="bearer", user_id="default", email=None)
+
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def get_provider() -> BaseProvider:

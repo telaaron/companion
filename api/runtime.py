@@ -53,6 +53,13 @@ async def best_effort(
             )
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _is_loopback_host(host: str) -> bool:
+    return host in _LOOPBACK_HOSTS
+
+
 def warn_if_process_auth_token(settings: Settings) -> None:
     """Warn when server auth was implicitly inherited from the shell."""
     if settings.uses_process_anthropic_auth_token():
@@ -61,6 +68,22 @@ def warn_if_process_auth_token(settings: Settings) -> None:
             "a configured .env file. The proxy will require that token. Add "
             "ANTHROPIC_AUTH_TOKEN= to .env to disable proxy auth, or set the "
             "same token in .env to make server auth explicit."
+        )
+
+
+def warn_if_auth_disabled_on_public_host(settings: Settings) -> None:
+    """Emit a loud warning when auth is disabled on a non-loopback bind address."""
+    # auth_required=None means "auto": disabled on loopback, enabled elsewhere.
+    auth_required = getattr(settings, "auth_required", None)
+    host = getattr(settings, "host", "127.0.0.1")
+    if _is_loopback_host(host):
+        return
+    if auth_required is False:
+        logger.warning(
+            "WARNING: AUTH_REQUIRED=false but server is binding to {} (non-loopback). "
+            "All requests will be accepted without authentication. "
+            "Set AUTH_REQUIRED=true or bind to 127.0.0.1 to enable auth enforcement.",
+            host,
         )
 
 
@@ -110,6 +133,7 @@ class AppRuntime:
         self.app.state.provider_registry = self._provider_registry
         try:
             warn_if_process_auth_token(self.settings)
+            warn_if_auth_disabled_on_public_host(self.settings)
             await self._validate_configured_models_best_effort()
             self._provider_registry.start_model_list_refresh(self.settings)
             await self._start_messaging_if_configured()

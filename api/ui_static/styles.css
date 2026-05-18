@@ -2512,3 +2512,125 @@ hr {
   justify-content: flex-end;
   padding-top: var(--sp-2);
 }
+
+/* ============================================================ Drawer */
+
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 200;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: 420px;
+  max-width: 95vw;
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--border-strong);
+  z-index: 201;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-inner {
+  padding: var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: 1;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+}
+
+/* ============================================================ Routines page */
+
+.routines-table {
+  table-layout: fixed;
+}
+
+.routines-table td:last-child {
+  white-space: nowrap;
+}
+
+.routines-history {
+  margin-top: var(--sp-5);
+}
+
+.cron-preview {
+  margin-top: var(--sp-2);
+  font-style: italic;
+}
+
+.tab-bar {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.tab-item {
+  flex: 1;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-12);
+  background: none;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.tab-item:last-child {
+  border-right: none;
+}
+
+.tab-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.trigger-panel {
+  padding: var(--sp-3) 0;
+}
+
+.form-error {
+  color: var(--error, #ef4444);
+  font-size: var(--fs-12);
+  margin-top: var(--sp-1);
+}
+
+.btn-sm {
+  padding: 3px 10px;
+  font-size: var(--fs-12);
+}
+
+.danger {
+  color: var(--error, #ef4444);
+}
+
+.icon-btn {
+  padding: 4px 8px;
+  font-size: var(--fs-14);
+  line-height: 1;
+}
+
+.gap-1 {
+  gap: var(--sp-1);
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+}

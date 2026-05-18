@@ -1436,6 +1436,101 @@ async def stream_job_events(
 
 # ============================================================ Routines
 
+_VALID_TRIGGER_TYPES = frozenset({"cron", "manual", "webhook"})
+
+
+class RoutineIn(BaseModel):
+    """Body for creating or updating a routine."""
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+    trigger_type: str = Field(default="cron", max_length=20)
+    trigger_config: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(...)
+    enabled: bool = Field(default=True)
+    project_id: str | None = None
+
+
+class RoutinePatchIn(BaseModel):
+    """Body for partially updating a routine (all fields optional)."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    trigger_type: str | None = Field(default=None, max_length=20)
+    trigger_config: dict[str, Any] | None = None
+    payload: dict[str, Any] | None = None
+    enabled: bool | None = None
+
+
+def _validate_routine_payload(payload: dict[str, Any]) -> None:
+    """Validate that payload contains model + messages (required by jobs API)."""
+    if not isinstance(payload.get("model"), str) or not payload["model"].strip():
+        raise HTTPException(
+            400, "payload.model is required and must be a non-empty string"
+        )
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        raise HTTPException(400, "payload.messages is required and must be a list")
+
+
+def _validate_trigger_type(trigger_type: str) -> None:
+    if trigger_type not in _VALID_TRIGGER_TYPES:
+        raise HTTPException(
+            400,
+            f"trigger_type must be one of: {', '.join(sorted(_VALID_TRIGGER_TYPES))}",
+        )
+
+
+def _compute_next_run_for_routine(
+    trigger_type: str, trigger_config: dict[str, Any]
+) -> int | None:
+    """Compute next_run_ms for a new/updated cron routine."""
+    if trigger_type != "cron":
+        return None
+    expression = trigger_config.get("expression", "")
+    tz = trigger_config.get("tz", "UTC") or "UTC"
+    if not expression:
+        return None
+    from api.agent.routines import _compute_next_run_ms
+
+    return _compute_next_run_ms(expression, tz, int(time.time() * 1000))
+
+
+@dashboard_router.get("/v1/routines/preview-cron")
+async def preview_cron(
+    expr: str = "",
+    tz: str = "UTC",
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return next 5 fire times for a cron expression.
+
+    Query params: ``expr`` (cron expression), ``tz`` (IANA timezone, default UTC).
+    Returns ``{fires: [epoch_ms, ...]}`` — empty list on invalid expression.
+    """
+    if not expr:
+        raise HTTPException(400, "expr is required")
+    try:
+        from croniter import CroniterBadCronError, croniter
+
+        if not croniter.is_valid(expr):
+            raise HTTPException(400, f"invalid cron expression: {expr!r}")
+
+        from api.agent.routines import _compute_next_run_ms
+
+        fires: list[int] = []
+        cursor_ms = int(time.time() * 1000)
+        for _ in range(5):
+            next_ms = _compute_next_run_ms(expr, tz, cursor_ms)
+            fires.append(next_ms)
+            cursor_ms = next_ms
+        return {"fires": fires}
+    except HTTPException:
+        raise
+    except CroniterBadCronError as exc:
+        raise HTTPException(400, f"invalid cron expression: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(400, f"cron preview failed: {exc}") from exc
+
 
 @dashboard_router.get("/v1/routines")
 async def list_routines_route(
@@ -1444,6 +1539,151 @@ async def list_routines_route(
 ) -> dict[str, Any]:
     """Return all routines for the current user."""
     return {"routines": datastore.list_routines(user_id=user_id)}
+
+
+@dashboard_router.post("/v1/routines")
+async def create_routine_route(
+    body: RoutineIn,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Create a new routine. ``payload`` must contain ``model`` and ``messages``."""
+    _validate_trigger_type(body.trigger_type)
+    _validate_routine_payload(body.payload)
+    next_run_ms = _compute_next_run_for_routine(body.trigger_type, body.trigger_config)
+    routine = datastore.create_routine(
+        name=body.name,
+        description=body.description,
+        trigger_type=body.trigger_type,
+        trigger_config=body.trigger_config,
+        payload=body.payload,
+        enabled=body.enabled,
+        project_id=body.project_id,
+        user_id=user_id,
+        next_run_ms=next_run_ms,
+    )
+    return routine
+
+
+@dashboard_router.patch("/v1/routines/{routine_id}")
+async def patch_routine_route(
+    routine_id: str,
+    body: RoutinePatchIn,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Partially update a routine. Scope-checks that the routine belongs to the caller."""
+    routine = datastore.get_routine(routine_id)
+    if routine is None:
+        raise HTTPException(404, "routine not found")
+    if routine.get("user_id") != user_id:
+        raise HTTPException(403, "not your routine")
+
+    if body.trigger_type is not None:
+        _validate_trigger_type(body.trigger_type)
+    if body.payload is not None:
+        _validate_routine_payload(body.payload)
+
+    # Recompute next_run_ms if trigger changed.
+    new_trigger_type = (
+        body.trigger_type
+        if body.trigger_type is not None
+        else routine.get("trigger_type", "cron")
+    )
+    new_trigger_config: dict[str, Any] | None = None
+    if body.trigger_config is not None or body.trigger_type is not None:
+        import json as _json
+
+        existing_tc: dict[str, Any] = _json.loads(routine.get("trigger_config") or "{}")
+        new_trigger_config = (
+            body.trigger_config if body.trigger_config is not None else existing_tc
+        )
+        next_run_ms = _compute_next_run_for_routine(
+            new_trigger_type, new_trigger_config
+        )
+    else:
+        next_run_ms = None
+
+    updated = datastore.update_routine(
+        routine_id,
+        name=body.name,
+        description=body.description,
+        trigger_type=body.trigger_type,
+        trigger_config=new_trigger_config,
+        payload=body.payload,
+        enabled=body.enabled,
+        next_run_ms=next_run_ms,
+    )
+    if updated is None:
+        raise HTTPException(404, "routine not found")
+    return updated
+
+
+@dashboard_router.delete("/v1/routines/{routine_id}")
+async def delete_routine_route(
+    routine_id: str,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Delete a routine owned by the current user."""
+    routine = datastore.get_routine(routine_id)
+    if routine is None:
+        raise HTTPException(404, "routine not found")
+    if routine.get("user_id") != user_id:
+        raise HTTPException(403, "not your routine")
+    datastore.delete_routine(routine_id)
+    return {"ok": True}
+
+
+@dashboard_router.post("/v1/routines/{routine_id}/run")
+async def run_routine_now_route(
+    routine_id: str,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Manually fire a routine immediately (UI "Run now" button).
+
+    Unlike the webhook trigger, this does **not** require an ``X-Routine-Secret``
+    header — it is already protected by the standard API key auth.  Returns the
+    created job row so the UI can deep-link to it.
+    """
+    routine = datastore.get_routine(routine_id)
+    if routine is None:
+        raise HTTPException(404, "routine not found")
+    if routine.get("user_id") != user_id:
+        raise HTTPException(403, "not your routine")
+
+    from api.agent.routines import trigger_routine_now
+
+    try:
+        job = await trigger_routine_now(routine_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"trigger failed: {exc}") from exc
+
+    return {"ok": True, "job": job}
+
+
+@dashboard_router.get("/v1/routines/{routine_id}/runs")
+async def list_routine_runs_route(
+    routine_id: str,
+    user_id: CurrentUserId,
+    limit: int = 25,
+    offset: int = 0,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return paginated run history for a routine."""
+    routine = datastore.get_routine(routine_id)
+    if routine is None:
+        raise HTTPException(404, "routine not found")
+    if routine.get("user_id") != user_id:
+        raise HTTPException(403, "not your routine")
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    runs = datastore.list_routine_runs(routine_id, limit=limit, offset=offset)
+    total = datastore.count_routine_runs(routine_id)
+    return {"runs": runs, "total": total, "limit": limit, "offset": offset}
 
 
 @dashboard_router.post("/v1/routines/{routine_id}/trigger")

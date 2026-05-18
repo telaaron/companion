@@ -236,6 +236,7 @@
     root: { label: "Root files", render: () => renderRoot() },
     skills: { label: "Skills", render: () => renderSkills() },
     memory: { label: "Memory", render: () => renderMemory() },
+    routines: { label: "Routines", render: () => renderRoutines() },
     insights: { label: "Insights", render: () => renderInsights() },
     settings: { label: "Settings", render: () => renderSettings() },
   };
@@ -4458,6 +4459,693 @@
     const observer = new MutationObserver(() => {
       if (!view.contains(body)) {
         clearInterval(interval);
+        observer.disconnect();
+      }
+    });
+    observer.observe(view, { childList: true });
+  }
+
+  // ============================================================ Routines page
+
+  const CRON_PRESETS = [
+    { label: "Every 5 min", expr: "*/5 * * * *" },
+    { label: "Hourly", expr: "0 * * * *" },
+    { label: "Every morning at 9", expr: "0 9 * * *" },
+    { label: "Every Monday", expr: "0 9 * * 1" },
+    { label: "Daily midnight", expr: "0 0 * * *" },
+  ];
+
+  async function renderRoutines() {
+    const view = $("#view");
+    view.innerHTML = "";
+
+    let routines = [];
+    let drawerOpen = false;
+    let editTarget = null; // routine id being edited, or null for create
+
+    // ---- drawer state
+    let dName = "";
+    let dDesc = "";
+    let dTriggerType = "cron";
+    let dCronExpr = "0 9 * * *";
+    let dCronTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    let dPayloadText = JSON.stringify({ model: "", messages: [] }, null, 2);
+    let dEnabled = true;
+    let dProjectId = null;
+    let dPayloadValid = true;
+
+    // ---- history panel state (shown below table)
+    let historyRoutineId = null;
+    let historyRuns = [];
+    let historyTotal = 0;
+    let historyOffset = 0;
+    const HIST_LIMIT = 25;
+
+    // ---- main refs
+    const tbody = el("tbody");
+    const histSection = el("div", { class: "routines-history", style: "display:none" });
+    const drawerEl = el("div", { class: "drawer", style: "display:none" });
+    const drawerOverlay = el("div", {
+      class: "drawer-overlay",
+      style: "display:none",
+      onclick: closeDrawer,
+    });
+
+    function fmtNextFire(ms) {
+      if (!ms) return "—";
+      const diff = ms - Date.now();
+      if (diff <= 0) return "overdue";
+      const m = Math.floor(diff / 60000);
+      const h = Math.floor(m / 60);
+      const d = Math.floor(h / 24);
+      if (d > 0) return `in ${d}d ${h % 24}h`;
+      if (h > 0) return `in ${h}h ${m % 60}m`;
+      return `in ${m}m`;
+    }
+
+    function fmtStatus(status) {
+      const map = {
+        pending: "pill-warn",
+        running: "pill-accent",
+        done: "pill-ok",
+        error: "badge error",
+        cancelled: "",
+      };
+      const cls = map[status] || "";
+      return el("span", { class: cls || "muted" }, status || "—");
+    }
+
+    async function loadRoutines() {
+      try {
+        const data = await api("/v1/routines");
+        routines = data.routines || [];
+        renderTable();
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="6" class="muted">Failed to load: ${e.message}</td></tr>`;
+      }
+    }
+
+    function renderTable() {
+      tbody.innerHTML = "";
+      if (!routines.length) {
+        tbody.appendChild(
+          el(
+            "tr",
+            {},
+            el(
+              "td",
+              { colspan: "6", class: "muted", style: "padding:24px;text-align:center" },
+              "No routines yet. Click + New Routine to create one."
+            )
+          )
+        );
+        return;
+      }
+      routines.forEach((r) => {
+        let triggerSummary = r.trigger_type || "—";
+        try {
+          const tc = JSON.parse(r.trigger_config || "{}");
+          if (r.trigger_type === "cron" && tc.expression) triggerSummary = tc.expression;
+          else if (r.trigger_type === "webhook") triggerSummary = "webhook";
+          else if (r.trigger_type === "manual") triggerSummary = "manual";
+        } catch (_) {}
+
+        const nextChip = el(
+          "span",
+          { class: r.next_run_ms ? "pill pill-accent" : "muted" },
+          fmtNextFire(r.next_run_ms)
+        );
+
+        const enabledBadge = el(
+          "span",
+          { class: r.enabled ? "badge success" : "badge" },
+          r.enabled ? "enabled" : "disabled"
+        );
+
+        const runBtn = el(
+          "button",
+          {
+            class: "btn btn-sm",
+            title: "Run now",
+            onclick: async (e) => {
+              e.stopPropagation();
+              runBtn.disabled = true;
+              runBtn.textContent = "Running…";
+              try {
+                const res = await api(`/v1/routines/${r.id}/run`, { method: "POST" });
+                toastShow("Routine fired — job " + (res.job?.id || ""), "ok");
+                await loadRoutines();
+                // Switch to Jobs page deep-link if job exists
+                if (res.job?.id) {
+                  location.hash = "audit";
+                  setRoute("audit");
+                }
+              } catch (err) {
+                toastShow(`Run failed: ${err.message}`, "error");
+                runBtn.disabled = false;
+                runBtn.textContent = "Run now";
+              }
+            },
+          },
+          "Run now"
+        );
+
+        const histBtn = el(
+          "button",
+          {
+            class: "btn btn-sm ghost",
+            title: "History",
+            onclick: (e) => {
+              e.stopPropagation();
+              toggleHistory(r.id);
+            },
+          },
+          "History"
+        );
+
+        const editBtn = el(
+          "button",
+          {
+            class: "btn btn-sm ghost",
+            onclick: (e) => {
+              e.stopPropagation();
+              openEditDrawer(r);
+            },
+          },
+          "Edit"
+        );
+
+        const delBtn = el(
+          "button",
+          {
+            class: "btn btn-sm ghost danger",
+            onclick: async (e) => {
+              e.stopPropagation();
+              if (!confirm(`Delete routine "${r.name}"?`)) return;
+              try {
+                await api(`/v1/routines/${r.id}`, { method: "DELETE" });
+                toastShow("Routine deleted", "ok");
+                if (historyRoutineId === r.id) closeHistory();
+                await loadRoutines();
+              } catch (err) {
+                toastShow(`Delete failed: ${err.message}`, "error");
+              }
+            },
+          },
+          "Delete"
+        );
+
+        const row = el(
+          "tr",
+          {},
+          el("td", {}, el("strong", { class: "fs-13" }, r.name)),
+          el("td", { class: "mono" }, triggerSummary),
+          el("td", {}, nextChip),
+          el("td", {}, enabledBadge),
+          el(
+            "td",
+            { class: "muted" },
+            r.last_run_ms ? fmtTime(r.last_run_ms) : "never"
+          ),
+          el("td", {}, el("div", { class: "row gap-1" }, runBtn, histBtn, editBtn, delBtn))
+        );
+        tbody.appendChild(row);
+      });
+    }
+
+    // ---- history sub-panel
+    async function toggleHistory(routineId) {
+      if (historyRoutineId === routineId) {
+        closeHistory();
+        return;
+      }
+      historyRoutineId = routineId;
+      historyOffset = 0;
+      histSection.style.display = "";
+      await loadHistory();
+    }
+
+    function closeHistory() {
+      historyRoutineId = null;
+      histSection.style.display = "none";
+      histSection.innerHTML = "";
+    }
+
+    async function loadHistory() {
+      if (!historyRoutineId) return;
+      histSection.innerHTML = "Loading history…";
+      try {
+        const data = await api(
+          `/v1/routines/${historyRoutineId}/runs?limit=${HIST_LIMIT}&offset=${historyOffset}`
+        );
+        historyRuns = data.runs || [];
+        historyTotal = data.total || 0;
+        renderHistory();
+      } catch (e) {
+        histSection.innerHTML = `<span class="muted">Failed: ${e.message}</span>`;
+      }
+    }
+
+    function renderHistory() {
+      histSection.innerHTML = "";
+      const rtn = routines.find((r) => r.id === historyRoutineId);
+      histSection.appendChild(
+        el(
+          "div",
+          { class: "section-heading", style: "margin-top:16px" },
+          el("h3", { class: "fs-13" }, `Run history — ${rtn ? rtn.name : historyRoutineId}`),
+          el(
+            "button",
+            { class: "btn btn-sm ghost", onclick: closeHistory },
+            "Close"
+          )
+        )
+      );
+      if (!historyRuns.length) {
+        histSection.appendChild(el("p", { class: "muted" }, "No runs yet."));
+        return;
+      }
+      const htable = el(
+        "table",
+        { class: "table" },
+        el(
+          "thead",
+          {},
+          el(
+            "tr",
+            {},
+            el("th", {}, "Run ID"),
+            el("th", {}, "Status"),
+            el("th", {}, "Job"),
+            el("th", {}, "Started"),
+            el("th", {}, "Finished")
+          )
+        ),
+        el("tbody", {}, ...historyRuns.map((run) =>
+          el(
+            "tr",
+            {},
+            el("td", { class: "mono" }, run.id),
+            el("td", {}, fmtStatus(run.status)),
+            el("td", { class: "mono" }, run.job_id || "—"),
+            el("td", {}, fmtTime(run.started_at)),
+            el("td", {}, run.finished_at ? fmtTime(run.finished_at) : "—")
+          )
+        ))
+      );
+      histSection.appendChild(htable);
+
+      // pagination
+      const totalPages = Math.ceil(historyTotal / HIST_LIMIT);
+      const page = Math.floor(historyOffset / HIST_LIMIT) + 1;
+      if (totalPages > 1) {
+        histSection.appendChild(
+          el(
+            "div",
+            { class: "row gap-2", style: "margin-top:8px" },
+            el(
+              "button",
+              {
+                class: "btn btn-sm ghost",
+                disabled: historyOffset === 0,
+                onclick: async () => {
+                  historyOffset = Math.max(0, historyOffset - HIST_LIMIT);
+                  await loadHistory();
+                },
+              },
+              "← Prev"
+            ),
+            el("span", { class: "muted fs-12" }, `Page ${page} / ${totalPages}`),
+            el(
+              "button",
+              {
+                class: "btn btn-sm ghost",
+                disabled: historyOffset + HIST_LIMIT >= historyTotal,
+                onclick: async () => {
+                  historyOffset += HIST_LIMIT;
+                  await loadHistory();
+                },
+              },
+              "Next →"
+            )
+          )
+        );
+      }
+    }
+
+    // ---- drawer: create / edit
+    function resetDrawerState(r = null) {
+      editTarget = r ? r.id : null;
+      dName = r ? r.name : "";
+      dDesc = r ? r.description || "" : "";
+      dTriggerType = r ? (r.trigger_type || "cron") : "cron";
+      dEnabled = r ? !!r.enabled : true;
+      dProjectId = r ? (r.project_id || null) : null;
+      try {
+        const tc = r ? JSON.parse(r.trigger_config || "{}") : {};
+        dCronExpr = tc.expression || "0 9 * * *";
+        dCronTz = tc.tz || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      } catch (_) {
+        dCronExpr = "0 9 * * *";
+        dCronTz = "UTC";
+      }
+      try {
+        const p = r ? JSON.parse(r.payload || "{}") : { model: "", messages: [] };
+        dPayloadText = JSON.stringify(p, null, 2);
+      } catch (_) {
+        dPayloadText = JSON.stringify({ model: "", messages: [] }, null, 2);
+      }
+      dPayloadValid = true;
+    }
+
+    function openCreateDrawer() {
+      resetDrawerState(null);
+      renderDrawer();
+      showDrawer();
+    }
+
+    function openEditDrawer(r) {
+      resetDrawerState(r);
+      renderDrawer();
+      showDrawer();
+    }
+
+    function showDrawer() {
+      drawerEl.style.display = "";
+      drawerOverlay.style.display = "";
+      drawerOpen = true;
+    }
+
+    function closeDrawer() {
+      drawerEl.style.display = "none";
+      drawerOverlay.style.display = "none";
+      drawerOpen = false;
+    }
+
+    async function getCronPreview(expr, tz) {
+      if (!expr) return null;
+      try {
+        const data = await api(
+          `/v1/routines/preview-cron?expr=${encodeURIComponent(expr)}&tz=${encodeURIComponent(tz)}`
+        );
+        return data.fires || [];
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function renderDrawer() {
+      drawerEl.innerHTML = "";
+      const title = editTarget ? "Edit routine" : "New routine";
+
+      // -- name
+      const nameInput = el("input", {
+        class: "form-input",
+        value: dName,
+        placeholder: "Routine name",
+        oninput: (e) => { dName = e.target.value; },
+      });
+
+      // -- description
+      const descInput = el("textarea", {
+        class: "form-input",
+        rows: "2",
+        placeholder: "Description (optional)",
+        oninput: (e) => { dDesc = e.target.value; },
+      });
+      descInput.value = dDesc;
+
+      // -- trigger type tabs
+      const triggerTypes = ["cron", "manual", "webhook"];
+      const triggerTabs = el("div", { class: "tab-bar" });
+      const cronPanel = el("div", { class: "trigger-panel" });
+      const manualPanel = el("div", { class: "trigger-panel", style: "display:none" });
+      const webhookPanel = el("div", { class: "trigger-panel", style: "display:none" });
+
+      function switchTrigger(type) {
+        dTriggerType = type;
+        triggerTypes.forEach((t) => {
+          const tab = triggerTabs.querySelector(`[data-tt="${t}"]`);
+          if (tab) tab.classList.toggle("active", t === type);
+        });
+        cronPanel.style.display = type === "cron" ? "" : "none";
+        manualPanel.style.display = type === "manual" ? "" : "none";
+        webhookPanel.style.display = type === "webhook" ? "" : "none";
+      }
+
+      triggerTypes.forEach((t) => {
+        const tab = el("button", {
+          class: `tab-item${dTriggerType === t ? " active" : ""}`,
+          dataset: { tt: t },
+          onclick: () => switchTrigger(t),
+        }, t);
+        triggerTabs.appendChild(tab);
+      });
+
+      // -- cron panel
+      const cronPreviewEl = el("div", { class: "cron-preview muted fs-12" }, "");
+
+      async function updateCronPreview() {
+        if (dTriggerType !== "cron") return;
+        cronPreviewEl.textContent = "Checking…";
+        const fires = await getCronPreview(dCronExpr, dCronTz);
+        if (!fires) {
+          cronPreviewEl.textContent = "Invalid expression";
+          return;
+        }
+        const labels = fires.slice(0, 3).map((ms) => fmtTime(ms)).join(", ");
+        cronPreviewEl.textContent = `Next: ${labels}`;
+      }
+
+      const presetSel = el("select", { class: "form-input" });
+      presetSel.appendChild(el("option", { value: "" }, "— Presets —"));
+      CRON_PRESETS.forEach((p) => {
+        const opt = el("option", { value: p.expr }, p.label);
+        presetSel.appendChild(opt);
+      });
+      presetSel.addEventListener("change", () => {
+        if (!presetSel.value) return;
+        dCronExpr = presetSel.value;
+        cronInput.value = dCronExpr;
+        presetSel.value = "";
+        void updateCronPreview();
+      });
+
+      const cronInput = el("input", {
+        class: "form-input mono",
+        value: dCronExpr,
+        placeholder: "cron expression",
+        oninput: (e) => {
+          dCronExpr = e.target.value;
+          void updateCronPreview();
+        },
+      });
+      const tzInput = el("input", {
+        class: "form-input",
+        value: dCronTz,
+        placeholder: "IANA timezone (e.g. America/New_York)",
+        oninput: (e) => { dCronTz = e.target.value; void updateCronPreview(); },
+      });
+
+      cronPanel.appendChild(el("label", { class: "form-label" }, "Presets"));
+      cronPanel.appendChild(presetSel);
+      cronPanel.appendChild(el("label", { class: "form-label", style: "margin-top:8px" }, "Cron expression"));
+      cronPanel.appendChild(cronInput);
+      cronPanel.appendChild(el("label", { class: "form-label", style: "margin-top:8px" }, "Timezone"));
+      cronPanel.appendChild(tzInput);
+      cronPanel.appendChild(cronPreviewEl);
+
+      manualPanel.appendChild(el("p", { class: "muted fs-12" }, "Triggered manually via the UI "Run now" button only."));
+      webhookPanel.appendChild(el("p", { class: "muted fs-12" }, 'Triggered via POST /v1/routines/{id}/trigger with X-Routine-Secret header.'));
+
+      // -- payload editor
+      const payloadError = el("div", { class: "form-error", style: "display:none" }, "");
+      const saveBtn = el("button", { class: "btn primary", onclick: saveRoutine }, editTarget ? "Save changes" : "Create");
+
+      const payloadInput = el("textarea", {
+        class: "form-input mono",
+        rows: "8",
+        placeholder: '{"model": "...", "messages": [...]}',
+        onblur: () => {
+          try {
+            const parsed = JSON.parse(payloadInput.value);
+            dPayloadText = payloadInput.value;
+            dPayloadValid = true;
+            payloadError.style.display = "none";
+            saveBtn.disabled = false;
+          } catch (e) {
+            dPayloadValid = false;
+            payloadError.textContent = `Invalid JSON: ${e.message}`;
+            payloadError.style.display = "";
+            saveBtn.disabled = true;
+          }
+        },
+      });
+      payloadInput.value = dPayloadText;
+
+      // -- enabled toggle
+      const enabledChk = el("input", {
+        type: "checkbox",
+        id: "drawer-enabled",
+        onchange: (e) => { dEnabled = e.target.checked; },
+      });
+      if (dEnabled) enabledChk.setAttribute("checked", "");
+
+      async function saveRoutine() {
+        // Re-validate payload on save
+        try {
+          JSON.parse(payloadInput.value);
+          dPayloadText = payloadInput.value;
+          dPayloadValid = true;
+          payloadError.style.display = "none";
+        } catch (e) {
+          dPayloadValid = false;
+          payloadError.textContent = `Invalid JSON: ${e.message}`;
+          payloadError.style.display = "";
+          saveBtn.disabled = true;
+          return;
+        }
+
+        let payload;
+        try {
+          payload = JSON.parse(dPayloadText);
+        } catch (_) {
+          toastShow("Payload is not valid JSON", "error");
+          return;
+        }
+
+        const triggerConfig = {};
+        if (dTriggerType === "cron") {
+          triggerConfig.expression = dCronExpr;
+          triggerConfig.tz = dCronTz;
+        }
+
+        const body = {
+          name: dName,
+          description: dDesc,
+          trigger_type: dTriggerType,
+          trigger_config: triggerConfig,
+          payload,
+          enabled: dEnabled,
+          project_id: dProjectId || null,
+        };
+
+        saveBtn.disabled = true;
+        saveBtn.textContent = "Saving…";
+        try {
+          if (editTarget) {
+            await api(`/v1/routines/${editTarget}`, {
+              method: "PATCH",
+              body: JSON.stringify(body),
+            });
+            toastShow("Routine updated", "ok");
+          } else {
+            await api("/v1/routines", {
+              method: "POST",
+              body: JSON.stringify(body),
+            });
+            toastShow("Routine created", "ok");
+          }
+          closeDrawer();
+          await loadRoutines();
+        } catch (err) {
+          toastShow(`Save failed: ${err.message}`, "error");
+          saveBtn.disabled = false;
+          saveBtn.textContent = editTarget ? "Save changes" : "Create";
+        }
+      }
+
+      drawerEl.appendChild(
+        el(
+          "div",
+          { class: "drawer-inner" },
+          el(
+            "div",
+            { class: "drawer-header" },
+            el("h2", { class: "fs-15" }, title),
+            el("button", { class: "ghost icon-btn", onclick: closeDrawer }, "✕")
+          ),
+          el("div", { class: "form-label" }, "Name"),
+          nameInput,
+          el("div", { class: "form-label", style: "margin-top:8px" }, "Description"),
+          descInput,
+          el("div", { class: "form-label", style: "margin-top:12px" }, "Trigger"),
+          triggerTabs,
+          el("div", { style: "margin-top:8px" }, cronPanel, manualPanel, webhookPanel),
+          el("div", { class: "form-label", style: "margin-top:12px" }, "Payload (JSON)"),
+          el("div", { class: "muted fs-12", style: "margin-bottom:4px" }, "Must include model and messages fields"),
+          payloadInput,
+          payloadError,
+          el(
+            "div",
+            { class: "row gap-2 align-center", style: "margin-top:10px" },
+            enabledChk,
+            el("label", { for: "drawer-enabled", class: "fs-13" }, "Enabled")
+          ),
+          el(
+            "div",
+            { class: "row gap-2", style: "margin-top:16px" },
+            saveBtn,
+            el("button", { class: "btn ghost", onclick: closeDrawer }, "Cancel")
+          )
+        )
+      );
+
+      // kick off preview immediately if cron
+      if (dTriggerType === "cron") void updateCronPreview();
+    }
+
+    // ---- layout
+    const newBtn = el(
+      "button",
+      { class: "btn primary", onclick: openCreateDrawer },
+      "+ New Routine"
+    );
+
+    const table = el(
+      "table",
+      { class: "table routines-table" },
+      el(
+        "thead",
+        {},
+        el(
+          "tr",
+          {},
+          el("th", {}, "Name"),
+          el("th", {}, "Trigger"),
+          el("th", {}, "Next fire"),
+          el("th", {}, "Status"),
+          el("th", {}, "Last run"),
+          el("th", {}, "Actions")
+        )
+      ),
+      tbody
+    );
+
+    const body = el("div", { class: "page-body" }, table, histSection);
+
+    const page = el(
+      "div",
+      { class: "page" },
+      pageHeader({
+        title: "Routines",
+        sub: "Scheduled + manual agent jobs",
+        actions: [newBtn],
+      }),
+      body,
+      drawerOverlay,
+      drawerEl
+    );
+
+    view.appendChild(page);
+    await loadRoutines();
+
+    // Refetch when tab gets focus
+    const onFocus = () => { if (currentRoute === "routines") void loadRoutines(); };
+    window.addEventListener("focus", onFocus);
+    const observer = new MutationObserver(() => {
+      if (!view.contains(body)) {
+        window.removeEventListener("focus", onFocus);
         observer.disconnect();
       }
     });

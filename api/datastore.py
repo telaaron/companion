@@ -1321,3 +1321,29 @@ def update_routine_run(
                 "UPDATE routine_runs SET status=?, finished_at=? WHERE id=?",
                 (status, now, run_id),
             )
+
+
+def list_routine_runs(
+    routine_id: str,
+    *,
+    limit: int = 25,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return runs for a routine, newest first, paginated."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM routine_runs WHERE routine_id=?"
+            " ORDER BY started_at DESC LIMIT ? OFFSET ?",
+            (routine_id, limit, offset),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_routine_runs(routine_id: str) -> int:
+    """Return the total count of runs for a routine."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM routine_runs WHERE routine_id=?",
+            (routine_id,),
+        ).fetchone()
+    return int(row[0]) if row else 0

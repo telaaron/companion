@@ -4416,6 +4416,153 @@
   }
 
   // ============================================================ Boot
+  // ============================================================ Daily journal banner
+
+  // Default questions shown in the journal modal.
+  const JOURNAL_QUESTIONS = [
+    { id: "focus", prompt: "What's your focus today?" },
+    { id: "remember", prompt: "Anything you want me to remember?" },
+    { id: "mood", prompt: "How are you feeling? (mood / energy)" },
+  ];
+
+  async function checkJournalBanner() {
+    // Only show on the chat route.
+    if (currentRoute !== "chat") return;
+    try {
+      const me = await api("/v1/me");
+      if (me.has_today_journal) return;
+    } catch (_err) {
+      return; // silently skip if /v1/me fails
+    }
+    // Don't show if user already dismissed for today.
+    const dismissKey = `fcc:journal:dismiss:${new Date().toISOString().slice(0, 10)}`;
+    if (localStorage.getItem(dismissKey)) return;
+
+    const existing = document.querySelector(".journal-banner");
+    if (existing) return; // already injected
+
+    const banner = el(
+      "div",
+      { class: "journal-banner" },
+      el("span", { class: "journal-banner-text" }, "5-min journal? answer 3 questions"),
+      el(
+        "button",
+        {
+          class: "journal-banner-btn primary",
+          onclick: () => openJournalModal(banner, dismissKey),
+        },
+        "Start"
+      ),
+      el(
+        "button",
+        {
+          class: "journal-banner-dismiss",
+          title: "Skip today",
+          onclick: async () => {
+            // Write an empty stub so the banner won't reappear.
+            try {
+              const today = new Date().toISOString().slice(0, 10);
+              await api("/v1/journal", {
+                method: "POST",
+                body: JSON.stringify({ date: today, answers: {} }),
+              });
+            } catch (_err) {
+              // best-effort
+            }
+            localStorage.setItem(dismissKey, "1");
+            banner.remove();
+          },
+        },
+        "Skip today"
+      )
+    );
+
+    // Insert before the chat-shell so it appears above the session list.
+    const view = $("#view");
+    const shell = view.querySelector(".chat-shell");
+    if (shell) {
+      view.insertBefore(banner, shell);
+    }
+  }
+
+  function openJournalModal(banner, dismissKey) {
+    const today = new Date().toISOString().slice(0, 10);
+    const answers = {};
+    const textareas = [];
+
+    const fields = JOURNAL_QUESTIONS.map((q) => {
+      const ta = el("textarea", {
+        class: "journal-answer",
+        placeholder: "…",
+        rows: "3",
+        oninput: (e) => {
+          answers[q.id] = e.target.value;
+        },
+      });
+      textareas.push(ta);
+      return el(
+        "div",
+        { class: "journal-field" },
+        el("label", { class: "journal-label" }, q.prompt),
+        ta
+      );
+    });
+
+    const errorEl = el("div", { class: "journal-error", style: "display:none" }, "");
+
+    const modal = el(
+      "div",
+      { class: "modal-overlay", onclick: (e) => e.target === modal && modal.remove() },
+      el(
+        "div",
+        { class: "modal-card journal-modal" },
+        el("h2", { class: "modal-title" }, `Journal — ${today}`),
+        ...fields,
+        errorEl,
+        el(
+          "div",
+          { class: "modal-actions" },
+          el(
+            "button",
+            {
+              class: "primary",
+              onclick: async (e) => {
+                const btn = e.currentTarget;
+                btn.disabled = true;
+                btn.textContent = "Saving…";
+                errorEl.style.display = "none";
+                try {
+                  await api("/v1/journal", {
+                    method: "POST",
+                    body: JSON.stringify({ date: today, answers }),
+                  });
+                  localStorage.setItem(dismissKey, "1");
+                  modal.remove();
+                  banner.remove();
+                  toastShow("Journal saved ✓", "ok");
+                } catch (err) {
+                  errorEl.textContent = `Error: ${err.message}`;
+                  errorEl.style.display = "";
+                  btn.disabled = false;
+                  btn.textContent = "Save";
+                }
+              },
+            },
+            "Save"
+          ),
+          el(
+            "button",
+            { onclick: () => modal.remove() },
+            "Cancel"
+          )
+        )
+      )
+    );
+
+    document.body.appendChild(modal);
+    if (textareas[0]) textareas[0].focus();
+  }
+
   function wireNav() {
     $$(".nav-item").forEach((b) => {
       b.addEventListener("click", () => setRoute(b.dataset.route));
@@ -4434,6 +4581,8 @@
     probeStatus();
     setInterval(refreshFooterMetrics, 30_000);
     setInterval(probeStatus, 30_000);
+    // Show the journal banner on startup (async, non-blocking).
+    void checkJournalBanner();
   }
   boot();
 })();

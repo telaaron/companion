@@ -1,0 +1,8 @@
+# Daily journal plugin — writes entries to vault_root/subpath/YYYY-MM-DD.md
+# Edit vault_root to point at your Obsidian vault (the folder containing .obsidian/).
+# The path can use ~ for $HOME.
+# subpath is the folder inside the vault where journal entries are created.
+name: journal
+kind: journal
+vault_root: ~/Documents/Obsidian Vault
+subpath: Companion/Journal

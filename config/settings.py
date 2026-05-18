@@ -369,6 +369,21 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ==================== Daily journal ====================
+    # Override the default vault root for journal entries.
+    # When empty, falls back to the journal plugin YAML or ~/journal.
+    journal_vault_root: str = Field(
+        default="",
+        validation_alias="JOURNAL_VAULT_ROOT",
+        description="Vault root for journal entries. Empty = use journal plugin or ~/journal.",
+    )
+    # Override the sub-directory inside the vault.
+    journal_subpath: str = Field(
+        default="Companion/Journal",
+        validation_alias="JOURNAL_SUBPATH",
+        description="Subfolder inside the vault for journal entries.",
+    )
+
     # ==================== Skill marketplace ====================
     # URL to a remote catalog index.json. ``None`` or empty string disables
     # remote catalog fetching; ``GET /v1/skills/catalog`` will return ``{skills: []}``.

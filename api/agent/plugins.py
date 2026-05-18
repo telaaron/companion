@@ -232,6 +232,13 @@ def load_all() -> None:
                 "is on the roadmap, no tool registered yet.",
                 plugin.get("__source__"),
             )
+        elif kind == "journal":
+            # Journal plugin — handled by api.agent.journal; no tools registered here.
+            logger.debug(
+                "PLUGIN {}: kind=journal loaded (vault_root={})",
+                plugin.get("__source__"),
+                plugin.get("vault_root", ""),
+            )
         else:
             logger.warning(
                 "PLUGIN {}: unknown kind '{}'", plugin.get("__source__"), kind

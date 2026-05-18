@@ -2422,3 +2422,93 @@ hr {
   border-color: var(--success, #22c55e);
   color: var(--success, #22c55e);
 }
+
+/* ============================================================ Daily journal banner */
+
+.journal-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: var(--r-md);
+  margin: var(--sp-3) var(--sp-4) 0;
+  font-size: var(--fs-13);
+}
+
+.journal-banner-text {
+  flex: 1;
+  color: var(--fg-base);
+}
+
+.journal-banner-btn {
+  flex-shrink: 0;
+}
+
+.journal-banner-dismiss {
+  flex-shrink: 0;
+  font-size: var(--fs-12);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-muted);
+  padding: var(--sp-1) var(--sp-2);
+  cursor: pointer;
+}
+
+.journal-banner-dismiss:hover {
+  color: var(--fg-base);
+}
+
+/* Journal modal */
+
+.journal-modal {
+  width: min(520px, 92vw);
+}
+
+.modal-title {
+  font-size: var(--fs-16);
+  font-weight: 600;
+  margin: 0 0 var(--sp-2);
+}
+
+.journal-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.journal-label {
+  font-size: var(--fs-13);
+  color: var(--fg-muted);
+}
+
+.journal-answer {
+  resize: vertical;
+  min-height: 4rem;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-base);
+  padding: var(--sp-2);
+  font-size: var(--fs-13);
+  font-family: inherit;
+}
+
+.journal-answer:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.journal-error {
+  color: var(--danger, #ef4444);
+  font-size: var(--fs-12);
+}
+
+.modal-actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+  padding-top: var(--sp-2);
+}

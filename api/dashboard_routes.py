@@ -61,12 +61,23 @@ async def me_route(
     user_id: CurrentUserId,
     _auth=Depends(require_api_key),
 ) -> dict[str, Any]:
-    """Return the caller's resolved user_id.
+    """Return the caller's resolved user_id and daily-journal banner flag.
 
+    ``has_today_journal`` is ``True`` when a journal entry already exists for
+    today's date, so the UI knows whether to suppress the journal banner.
     Useful for the UI to display the active user and detect whether
     multi-user mode is in effect (``user_id != "default"``).
     """
-    return {"user_id": user_id}
+    import datetime
+
+    from api.agent.journal import has_journal_entry
+
+    today = datetime.date.today()
+    try:
+        has_journal = has_journal_entry(today)
+    except Exception:
+        has_journal = False
+    return {"user_id": user_id, "has_today_journal": has_journal}
 
 
 # ============================================================ Projects
@@ -452,6 +463,103 @@ async def insights_route(
     since_ts = _since_ts(range)
     data = compute_insights(since_ts=since_ts, user_id=user_id)
     return {"range": range, "since_ts": since_ts, **data}
+
+
+# ============================================================ Daily journal
+
+
+class JournalIn(BaseModel):
+    date: str = Field(
+        ...,
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="ISO date (YYYY-MM-DD) for the journal entry.",
+    )
+    answers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of question-id → answer text.",
+    )
+
+
+@dashboard_router.post("/v1/journal")
+async def journal_post(
+    body: JournalIn,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Write (or overwrite) the journal entry for ``date``.
+
+    Accepts ``{date: YYYY-MM-DD, answers: {focus: ..., remember: ..., mood: ...}}``.
+    Returns the vault-relative path of the written file.
+    """
+    import datetime
+
+    from api.agent.journal import (
+        DEFAULT_QUESTIONS,
+        journal_entry_path,
+        resolve_journal_vault,
+        write_journal_entry,
+    )
+
+    try:
+        entry_date = datetime.date.fromisoformat(body.date)
+    except ValueError as exc:
+        raise HTTPException(400, f"invalid date: {exc}") from exc
+
+    try:
+        written_path = write_journal_entry(
+            entry_date,
+            body.answers,
+            questions=DEFAULT_QUESTIONS,
+        )
+    except OSError as exc:
+        raise HTTPException(500, f"failed to write journal entry: {exc}") from exc
+
+    vault_root, subpath = resolve_journal_vault()
+    rel_path = journal_entry_path(entry_date, vault_root=vault_root, subpath=subpath)
+    try:
+        rel_str = str(rel_path.relative_to(vault_root))
+    except ValueError:
+        rel_str = str(written_path)
+
+    return {
+        "ok": True,
+        "date": body.date,
+        "path": str(written_path),
+        "vault_relative": rel_str,
+    }
+
+
+@dashboard_router.get("/v1/journal")
+async def journal_get(
+    date: str = "",
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return the journal entry for ``date`` (defaults to today) as markdown.
+
+    Returns ``{date, content, exists}`` — ``content`` is ``null`` when the
+    entry has not been written yet.
+    """
+    import datetime
+
+    from api.agent.journal import read_journal_entry
+
+    if not date:
+        entry_date = datetime.date.today()
+    else:
+        try:
+            entry_date = datetime.date.fromisoformat(date)
+        except ValueError as exc:
+            raise HTTPException(400, f"invalid date: {exc}") from exc
+
+    try:
+        content = read_journal_entry(entry_date)
+    except OSError as exc:
+        raise HTTPException(500, f"failed to read journal entry: {exc}") from exc
+
+    return {
+        "date": entry_date.isoformat(),
+        "content": content,
+        "exists": content is not None,
+    }
 
 
 # ============================================================ File edits / audit

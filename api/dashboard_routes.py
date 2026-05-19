@@ -398,6 +398,16 @@ async def append_session_message(
     )
 
 
+@dashboard_router.delete("/v1/sessions/{session_id}/messages/{message_id}")
+async def delete_session_message(
+    session_id: str, message_id: str, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    if datastore.get_session(session_id) is None:
+        raise HTTPException(404, "session not found")
+    datastore.delete_message(message_id)
+    return {"ok": True}
+
+
 # ============================================================ Usage
 
 

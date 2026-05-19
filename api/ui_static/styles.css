@@ -813,16 +813,41 @@ hr {
 
 /* ============================================================ Voice mode indicator */
 
-.voice-indicator {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #ef4444;
-  margin-left: var(--sp-2);
-  align-self: center;
+/* Legacy voice-indicator kept for backward compat */
+.voice-indicator { display: none; }
+
+/* Mic button in composer row */
+.mic-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 16px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.mic-btn:hover {
+  background: var(--bg-overlay);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+.mic-btn.recording {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: #ef4444;
+  color: #ef4444;
   box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
   animation: voice-pulse 1.2s ease-in-out infinite;
+}
+.mic-btn.transcribing {
+  opacity: 0.5;
+  cursor: default;
 }
 
 @keyframes voice-pulse {

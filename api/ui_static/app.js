@@ -815,47 +815,29 @@
 
   // ============================================================ Voice mode
   //
-  // Hold spacebar (>=200 ms) while the chat textarea is focused and empty to
-  // start recording via MediaRecorder.  Release the key to stop + POST the
-  // blob to /v1/transcribe.  A red pulsing dot is shown during recording.
-  // If a <meta name="voice-auto-send" content="true"> tag is present, the
-  // form is automatically submitted after transcription.
-  //
-  // Degrades gracefully: if getUserMedia is denied or MediaRecorder is
-  // unavailable the textarea behaves like a plain input.
+  // Mic icon button in composer row. Click to start/stop recording.
+  // Returns button node (null if MediaRecorder unavailable).
 
-  function _attachVoiceMode(ta, composerForm) {
-    if (!window.MediaRecorder || !navigator.mediaDevices) return;
+  function _buildVoiceButton(ta) {
+    if (!window.MediaRecorder || !navigator.mediaDevices) return null;
 
     let _recording = false;
-    let _holdTimer = null;
     let _mediaRecorder = null;
     let _stream = null;
     let _chunks = [];
-    let _indicator = null;
 
-    function _showIndicator() {
-      if (_indicator) return;
-      _indicator = el("span", {
-        class: "voice-indicator",
-        title: "Recording… release Space to send",
-      });
-      composerForm.appendChild(_indicator);
-    }
+    const btn = el("button", {
+      class: "mic-btn",
+      type: "button",
+      title: "Record voice input",
+    }, "\uD83C\uDFA4");
 
-    function _hideIndicator() {
-      if (_indicator) {
-        _indicator.remove();
-        _indicator = null;
-      }
-    }
-
-    async function _startRecording() {
-      if (_recording) return;
+    async function _start() {
       try {
         _stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (_e) {
-        return; // mic denied — degrade gracefully
+        toastShow("Microphone access denied", "error");
+        return;
       }
       _chunks = [];
       _mediaRecorder = new MediaRecorder(_stream, {
@@ -868,13 +850,16 @@
       };
       _mediaRecorder.start(100);
       _recording = true;
-      _showIndicator();
+      btn.classList.add("recording");
+      btn.title = "Stop recording";
     }
 
-    async function _stopAndTranscribe() {
+    async function _stop() {
       if (!_recording || !_mediaRecorder) return;
       _recording = false;
-      _hideIndicator();
+      btn.classList.remove("recording");
+      btn.classList.add("transcribing");
+      btn.title = "Record voice input";
 
       await new Promise((resolve) => {
         _mediaRecorder.onstop = resolve;
@@ -887,11 +872,12 @@
 
       const blob = new Blob(_chunks, { type: _mediaRecorder.mimeType });
       _chunks = [];
-      if (blob.size < 100) return; // too short — ignore
+      btn.classList.remove("transcribing");
+
+      if (blob.size < 100) return;
 
       const form = new FormData();
       form.append("audio", blob, "audio.webm");
-
       try {
         const res = await fetch("/v1/transcribe", {
           method: "POST",
@@ -903,32 +889,20 @@
         const text = (data.text || "").trim();
         if (!text) return;
         ta.value = ta.value ? ta.value + " " + text : text;
-        ta.dispatchEvent(new Event("input")); // trigger auto-resize
-        const autoSendMeta = document
-          .querySelector('meta[name="voice-auto-send"]')
-          ?.getAttribute("content");
-        if (autoSendMeta === "true") composerForm.requestSubmit();
+        ta.dispatchEvent(new Event("input"));
+        ta.focus();
       } catch (_e) {
-        /* network error — ignore */
+        toastShow("Transcription failed", "error");
       }
     }
 
-    ta.addEventListener("keydown", (e) => {
-      if (e.key !== " " || e.repeat || _recording) return;
-      if (ta.value.trim()) return; // don't hijack typed content
-      _holdTimer = setTimeout(() => _startRecording(), 200);
+    btn.addEventListener("click", () => {
+      if (_recording) _stop();
+      else _start();
     });
 
-    ta.addEventListener("keyup", (e) => {
-      if (e.key !== " ") return;
-      if (_holdTimer) {
-        clearTimeout(_holdTimer);
-        _holdTimer = null;
-      }
-      if (_recording) _stopAndTranscribe();
-    });
+    return btn;
   }
-
   function renderChatMain(host, session, projects, upstreamModels) {
     host.innerHTML = "";
     const topbar = el("div", { class: "chat-topbar" });
@@ -1141,10 +1115,13 @@
       )
     );
     const ta = $("textarea", composer);
+    // Insert mic button before send button (after ta is available).
+    const _micBtn = _buildVoiceButton(ta);
+    if (_micBtn) {
+      const sendBtn = composer.querySelector("button[type=submit]");
+      sendBtn.parentNode.insertBefore(_micBtn, sendBtn);
+    }
     host.appendChild(composer);
-
-    // ---- Voice mode: hold-spacebar to record, release to transcribe ----
-    _attachVoiceMode(ta, composer);
 
     // Render existing messages; populate preview LRU from past tool calls.
     const _seenPaths = new Set();
@@ -1187,7 +1164,7 @@
   function renderChatMessage(msg, ctx) {
     const wrap = el(
       "article",
-      { class: "message " + (msg.role || "assistant") },
+      { class: "message " + (msg.role || "assistant"), "data-msg-id": msg.id || "" },
       el(
         "div",
         { class: "message-meta" },
@@ -1217,9 +1194,9 @@
     return wrap;
   }
 
-  // attachRegenerateButton: ↺ overlay opens a model-picker popover.
-  // Picking a model re-fires the *previous* user message through it,
-  // appending a fresh assistant turn below.
+  // attachRegenerateButton: ↺ overlay opens model picker.
+  // Picking a model REPLACES this assistant bubble with a fresh one —
+  // the old message is removed from DB + DOM before the new job runs.
   function attachRegenerateButton(messageNode, ctx) {
     const btn = el(
       "button",
@@ -1232,51 +1209,25 @@
     );
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      // Close any existing popovers first.
-      document
-        .querySelectorAll(".regen-popover")
-        .forEach((n) => n.remove());
+      document.querySelectorAll(".regen-popover").forEach((n) => n.remove());
 
       const pop = el("div", { class: "regen-popover" });
-      const header = el(
-        "div",
-        { class: "regen-popover-header" },
-        "Regenerate with…"
-      );
-      pop.appendChild(header);
+      pop.appendChild(el("div", { class: "regen-popover-header" }, "Regenerate with…"));
 
       const list = el("div", { class: "regen-popover-list" });
       for (const m of ctx.modelOptions) {
-        const item = el(
-          "button",
-          {
-            class: "regen-popover-item",
-            type: "button",
-          },
-          m
-        );
+        const item = el("button", { class: "regen-popover-item", type: "button" }, m);
         if (m === ctx.defaultModel) item.classList.add("current");
         item.addEventListener("click", async (ev) => {
           ev.stopPropagation();
           pop.remove();
-          const prevUserText = findPrevUserText(messageNode);
-          if (!prevUserText) {
-            toastShow("Nothing to regenerate — no prior user message.", "error");
-            return;
-          }
-          await sendInChat(
-            ctx.session,
-            m,
-            prevUserText,
-            ctx.getMessagesHost()
-          );
+          await regenInChat(messageNode, m, ctx);
         });
         list.appendChild(item);
       }
       pop.appendChild(list);
       messageNode.appendChild(pop);
 
-      // Click-away to dismiss.
       const dismiss = (ev) => {
         if (!pop.contains(ev.target) && ev.target !== btn) {
           pop.remove();
@@ -1286,6 +1237,58 @@
       setTimeout(() => document.addEventListener("click", dismiss), 0);
     });
     messageNode.appendChild(btn);
+  }
+
+  // regenInChat: remove old assistant bubble from DOM + DB, re-run job.
+  async function regenInChat(messageNode, model, ctx) {
+    const messagesHost = ctx.getMessagesHost();
+
+    // Delete from DB if node carries a message id.
+    const msgId = messageNode.dataset.msgId;
+    if (msgId) {
+      try {
+        await api(
+          `/v1/sessions/${encodeURIComponent(ctx.session.id)}/messages/${encodeURIComponent(msgId)}`,
+          { method: "DELETE" }
+        );
+      } catch (_e) {
+        // Non-fatal — proceed anyway; stale row harmless.
+      }
+    }
+    // Remove from DOM.
+    messageNode.remove();
+
+    // Fire a new job with the current history (which now ends at the user msg).
+    const fresh = await loadSessionDetail(ctx.session.id);
+    const messages = (fresh.messages || []).map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+    if (!messages.length || messages[messages.length - 1].role !== "user") {
+      toastShow("Nothing to regenerate — no prior user message.", "error");
+      return;
+    }
+
+    let job;
+    try {
+      job = await api(`/v1/sessions/${encodeURIComponent(ctx.session.id)}/jobs`, {
+        method: "POST",
+        body: JSON.stringify({
+          model: model || ctx.defaultModel || "deepseek/deepseek-v4-flash",
+          messages,
+          max_tokens: 4096,
+          project_id: ctx.session.project_id || null,
+          metadata: { session_id: ctx.session.id },
+        }),
+      });
+    } catch (e) {
+      messagesHost.appendChild(
+        renderChatMessage({ role: "assistant", content: `Error: ${e.message}`, error: true })
+      );
+      return;
+    }
+    setActiveJob(ctx.session.id, job.id);
+    await streamJobIntoChat(ctx.session, job.id, messagesHost);
   }
 
   function findPrevUserText(assistantNode) {
@@ -4371,7 +4374,7 @@
           rescanBtn.disabled = true;
           rescanBtn.textContent = "Rescanning…";
           try {
-            await api("POST", "/v1/index/rescan");
+            await api("/v1/index/rescan", { method: "POST" });
           } catch (e) {
             /* ignore */
           }
@@ -4432,7 +4435,7 @@
 
     async function refresh() {
       try {
-        status = await api("GET", "/v1/index/status");
+        status = await api("/v1/index/status");
         renderStatus(status);
       } catch (e) {
         statusEl.textContent = "Indexer not running — set MEMORY_INDEX_PATHS";
@@ -4955,7 +4958,7 @@
       cronPanel.appendChild(tzInput);
       cronPanel.appendChild(cronPreviewEl);
 
-      manualPanel.appendChild(el("p", { class: "muted fs-12" }, "Triggered manually via the UI "Run now" button only."));
+      manualPanel.appendChild(el("p", { class: "muted fs-12" }, 'Triggered manually via the UI "Run now" button only.'));
       webhookPanel.appendChild(el("p", { class: "muted fs-12" }, 'Triggered via POST /v1/routines/{id}/trigger with X-Routine-Secret header.'));
 
       // -- payload editor

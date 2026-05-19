@@ -546,6 +546,12 @@ def append_message(*, session_id: str, role: str, content: str) -> dict[str, Any
     }
 
 
+def delete_message(message_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM messages WHERE id=?", (message_id,))
+        conn.execute("DELETE FROM memory_fts WHERE ref=?", (message_id,))
+
+
 def list_messages(session_id: str) -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(

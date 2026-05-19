@@ -1,0 +1,25 @@
+slug: inbox-triage
+name: Inbox triage
+description: Every weekday morning, summarize unread emails and flag action items.
+trigger:
+  type: cron
+  expression: "0 7 * * 1-5"
+  tz: UTC
+payload:
+  model: deepseek/deepseek-v4-flash
+  max_tokens: 1200
+  messages:
+    - role: user
+      content: |
+        Check the inbox for {{email_account}}.
+        Summarize unread emails from the last {{hours_back}} hours.
+        Flag any that require a response today, highlight deadlines, and suggest which to archive.
+inputs:
+  - name: email_account
+    label: Email account address
+    type: string
+    default: me@example.com
+  - name: hours_back
+    label: Hours to look back
+    type: string
+    default: "24"

@@ -1,0 +1,25 @@
+slug: refactor-todo-sweeper
+name: Refactor TODO sweeper
+description: Every weekday at 9 AM, scan the configured codebase path for TODO/FIXME comments and create a prioritized action list.
+trigger:
+  type: cron
+  expression: "0 9 * * 1-5"
+  tz: UTC
+payload:
+  model: deepseek/deepseek-v4-flash
+  max_tokens: 2000
+  messages:
+    - role: user
+      content: |
+        Scan the codebase at path {{repo_path}} for TODO and FIXME comments.
+        Group them by file, estimate effort (small/medium/large), and produce a prioritized action list.
+        Focus on {{focus_area}} if specified, otherwise scan everything.
+inputs:
+  - name: repo_path
+    label: Repository path (absolute)
+    type: string
+    default: /workspace
+  - name: focus_area
+    label: Focus area (e.g. "api/" or leave blank for all)
+    type: string
+    default: ""

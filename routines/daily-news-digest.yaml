@@ -1,0 +1,20 @@
+slug: daily-news-digest
+name: Daily news digest
+description: At 8 AM, summarize top stories from configured RSS feeds.
+trigger:
+  type: cron
+  expression: "0 8 * * *"
+  tz: Europe/Berlin
+payload:
+  model: deepseek/deepseek-v4-flash
+  max_tokens: 1500
+  messages:
+    - role: user
+      content: |
+        Read these feeds: {{feeds}}.
+        Summarize the top 5 stories in 2 sentences each.
+inputs:
+  - name: feeds
+    label: RSS feed URLs (comma separated)
+    type: string
+    default: https://news.ycombinator.com/rss

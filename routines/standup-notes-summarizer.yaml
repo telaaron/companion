@@ -1,0 +1,26 @@
+slug: standup-notes-summarizer
+name: Standup notes summarizer
+description: Before the daily standup, summarize recent commits, open PRs, and blockers into a standup snippet.
+trigger:
+  type: cron
+  expression: "45 9 * * 1-5"
+  tz: UTC
+payload:
+  model: deepseek/deepseek-v4-flash
+  max_tokens: 800
+  messages:
+    - role: user
+      content: |
+        Prepare a standup update for {{team_name}}.
+        Repository: {{repo_path}}.
+        Summarize what was done yesterday, what is planned today, and any blockers.
+        Keep it concise — 3 bullet points per section max.
+inputs:
+  - name: team_name
+    label: Team or project name
+    type: string
+    default: Engineering
+  - name: repo_path
+    label: Repository path (absolute)
+    type: string
+    default: /workspace

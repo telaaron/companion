@@ -5095,11 +5095,172 @@
       if (dTriggerType === "cron") void updateCronPreview();
     }
 
+    // ---- template picker state
+    let templates = [];
+    const templateModalEl = el("div", { class: "drawer", style: "display:none" });
+    const templateModalOverlay = el("div", {
+      class: "drawer-overlay",
+      style: "display:none",
+      onclick: closeTemplateModal,
+    });
+
+    async function loadTemplates() {
+      try {
+        const data = await api("/v1/routines/templates");
+        templates = data.templates || [];
+      } catch (_) {
+        templates = [];
+      }
+    }
+
+    function closeTemplateModal() {
+      templateModalEl.style.display = "none";
+      templateModalOverlay.style.display = "none";
+    }
+
+    function openTemplateModal() {
+      renderTemplateModal();
+      templateModalEl.style.display = "";
+      templateModalOverlay.style.display = "";
+    }
+
+    function renderTemplateModal() {
+      templateModalEl.innerHTML = "";
+      const grid = el("div", { class: "template-grid" });
+      templates.forEach((tpl) => {
+        const card = el(
+          "div",
+          {
+            class: "template-card",
+            onclick: () => { closeTemplateModal(); openFromTemplate(tpl); },
+          },
+          el("div", { class: "template-card-name fs-14" }, tpl.name || tpl.slug),
+          el("div", { class: "template-card-desc muted fs-12" }, tpl.description || "")
+        );
+        grid.appendChild(card);
+      });
+      if (!templates.length) {
+        grid.appendChild(el("p", { class: "muted fs-13" }, "No templates available."));
+      }
+      templateModalEl.appendChild(
+        el(
+          "div",
+          { class: "drawer-inner" },
+          el(
+            "div",
+            { class: "drawer-header" },
+            el("h2", { class: "fs-15" }, "From template…"),
+            el("button", { class: "ghost icon-btn", onclick: closeTemplateModal }, "✕")
+          ),
+          el("p", { class: "muted fs-12", style: "margin-bottom:12px" }, "Pick a starter routine and fill in the details."),
+          grid
+        )
+      );
+    }
+
+    function openFromTemplate(tpl) {
+      // Build default inputs from template
+      const inputDefs = tpl.inputs || [];
+      const inputValues = {};
+      inputDefs.forEach((inp) => {
+        inputValues[inp.name] = inp.default != null ? String(inp.default) : "";
+      });
+
+      renderTemplateForm(tpl, inputValues);
+    }
+
+    function renderTemplateForm(tpl, inputValues) {
+      templateModalEl.innerHTML = "";
+      const inputDefs = tpl.inputs || [];
+      const formFields = [];
+      const currentValues = Object.assign({}, inputValues);
+
+      inputDefs.forEach((inp) => {
+        const fieldInput = el("input", {
+          class: "form-input",
+          value: currentValues[inp.name] != null ? String(currentValues[inp.name]) : "",
+          placeholder: inp.label || inp.name,
+          oninput: (e) => { currentValues[inp.name] = e.target.value; },
+        });
+        formFields.push(
+          el("div", { style: "margin-bottom:10px" },
+            el("div", { class: "form-label" }, inp.label || inp.name),
+            fieldInput
+          )
+        );
+      });
+
+      const errEl = el("div", { class: "form-error", style: "display:none" }, "");
+      const createBtn = el(
+        "button",
+        {
+          class: "btn primary",
+          onclick: async () => {
+            createBtn.disabled = true;
+            createBtn.textContent = "Creating…";
+            errEl.style.display = "none";
+            try {
+              await api("/v1/routines/from-template", {
+                method: "POST",
+                body: JSON.stringify({ slug: tpl.slug, inputs: currentValues }),
+              });
+              closeTemplateModal();
+              toastShow("Routine created from template", "ok");
+              await loadRoutines();
+            } catch (err) {
+              errEl.textContent = err.message || "Failed to create routine";
+              errEl.style.display = "";
+              createBtn.disabled = false;
+              createBtn.textContent = "Create routine";
+            }
+          },
+        },
+        "Create routine"
+      );
+
+      templateModalEl.appendChild(
+        el(
+          "div",
+          { class: "drawer-inner" },
+          el(
+            "div",
+            { class: "drawer-header" },
+            el("h2", { class: "fs-15" }, tpl.name || tpl.slug),
+            el("button", {
+              class: "ghost icon-btn",
+              onclick: () => { templateModalEl.innerHTML = ""; openTemplateModal(); },
+            }, "←")
+          ),
+          el("p", { class: "muted fs-12", style: "margin-bottom:12px" }, tpl.description || ""),
+          ...formFields,
+          errEl,
+          el(
+            "div",
+            { class: "row gap-2", style: "margin-top:16px" },
+            createBtn,
+            el("button", { class: "btn ghost", onclick: closeTemplateModal }, "Cancel")
+          )
+        )
+      );
+    }
+
     // ---- layout
     const newBtn = el(
       "button",
       { class: "btn primary", onclick: openCreateDrawer },
       "+ New Routine"
+    );
+
+    const fromTemplateBtn = el(
+      "button",
+      {
+        class: "btn",
+        onclick: async () => {
+          if (!templates.length) await loadTemplates();
+          openTemplateModal();
+        },
+      },
+      "From template…"
     );
 
     const table = el(
@@ -5130,11 +5291,13 @@
       pageHeader({
         title: "Routines",
         sub: "Scheduled + manual agent jobs",
-        actions: [newBtn],
+        actions: [fromTemplateBtn, newBtn],
       }),
       body,
       drawerOverlay,
-      drawerEl
+      drawerEl,
+      templateModalOverlay,
+      templateModalEl
     );
 
     view.appendChild(page);

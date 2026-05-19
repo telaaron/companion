@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from loguru import logger
@@ -1723,6 +1724,120 @@ async def trigger_routine(
         raise HTTPException(500, f"trigger failed: {exc}") from exc
 
     return {"ok": True, "job": job}
+
+
+# ============================================================ Routine templates
+
+_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "routines"
+_templates_cache: dict[str, dict[str, Any]] | None = None
+
+
+def _load_templates() -> dict[str, dict[str, Any]]:
+    """Load and cache all YAML templates from the routines/ directory."""
+    global _templates_cache
+    if _templates_cache is not None:
+        return _templates_cache
+    cache: dict[str, dict[str, Any]] = {}
+    if _TEMPLATES_DIR.is_dir():
+        for path in sorted(_TEMPLATES_DIR.glob("*.yaml")):
+            try:
+                data = yaml.safe_load(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and "slug" in data:
+                    cache[data["slug"]] = data
+            except Exception:
+                logger.warning("Failed to parse routine template {}", path)
+    _templates_cache = cache
+    return cache
+
+
+def _substitute_vars(text: str, inputs: dict[str, str]) -> str:
+    """Replace ``{{var}}`` placeholders with values from *inputs*."""
+    for key, value in inputs.items():
+        text = text.replace("{{" + key + "}}", value)
+    return text
+
+
+def _materialize_template(
+    template: dict[str, Any], inputs: dict[str, str]
+) -> dict[str, Any]:
+    """Deep-substitute ``{{var}}`` in all string values of the template payload."""
+    raw = json.dumps(template.get("payload", {}))
+    substituted = _substitute_vars(raw, inputs)
+    return json.loads(substituted)
+
+
+class FromTemplateIn(BaseModel):
+    """Body for POST /v1/routines/from-template."""
+
+    slug: str
+    inputs: dict[str, str] = Field(default_factory=dict)
+
+
+@dashboard_router.get("/v1/routines/templates")
+async def list_routine_templates(
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Return all available routine templates parsed from ``routines/*.yaml``."""
+    templates = list(_load_templates().values())
+    return {"templates": templates}
+
+
+@dashboard_router.post("/v1/routines/from-template")
+async def create_routine_from_template(
+    body: FromTemplateIn,
+    user_id: CurrentUserId,
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Materialize a template by substituting ``{{var}}`` placeholders, then create the routine."""
+    templates = _load_templates()
+    template = templates.get(body.slug)
+    if template is None:
+        raise HTTPException(404, f"template '{body.slug}' not found")
+
+    # Validate required inputs.
+    # An input is required when its ``default`` key is absent or explicitly None.
+    # An empty-string default is valid — the placeholder resolves to "".
+    _SENTINEL = object()
+    missing: list[str] = []
+    merged_inputs: dict[str, str] = {}
+    for inp in template.get("inputs", []):
+        name = inp.get("name", "")
+        default = inp.get("default", _SENTINEL)
+        value = body.inputs.get(name, "")
+        if not value:
+            if default is _SENTINEL or default is None:
+                missing.append(name)
+                continue
+            value = str(default)
+        merged_inputs[name] = value
+
+    if missing:
+        raise HTTPException(422, f"missing required inputs: {', '.join(missing)}")
+
+    payload = _materialize_template(template, merged_inputs)
+    _validate_routine_payload(payload)
+
+    trigger = template.get("trigger", {})
+    trigger_type = trigger.get("type", "cron")
+    trigger_config: dict[str, Any] = {}
+    if trigger_type == "cron":
+        trigger_config["expression"] = trigger.get("expression", "0 9 * * *")
+        if "tz" in trigger:
+            trigger_config["tz"] = trigger["tz"]
+
+    next_run_ms = _compute_next_run_for_routine(trigger_type, trigger_config)
+
+    routine = datastore.create_routine(
+        name=template.get("name", body.slug),
+        description=template.get("description", ""),
+        trigger_type=trigger_type,
+        trigger_config=trigger_config,
+        payload=payload,
+        enabled=True,
+        user_id=user_id,
+        next_run_ms=next_run_ms,
+    )
+    return routine
 
 
 # ============================================================ Provider test

@@ -114,10 +114,13 @@ async def require_api_key(
     _cf_configured = bool(cf_access_aud and cf_access_team)
 
     # --- Bearer / X-API-Key path ---
+    # Also accept `?token=` query parameter — required for browser
+    # EventSource which cannot set custom headers (only cookies).
     header = (
         request.headers.get("x-api-key")
         or request.headers.get("authorization")
         or request.headers.get("anthropic-auth-token")
+        or request.query_params.get("token")
     )
     if header:
         token = header

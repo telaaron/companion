@@ -1567,69 +1567,142 @@
       }
     };
 
-    const openStream = async () => {
-      const headers = {
-        Accept: "text/event-stream",
-      };
-      if (AUTH) headers.Authorization = `Bearer ${AUTH}`;
-      if (lastSeq >= 0) headers["Last-Event-ID"] = String(lastSeq);
-      const url = `/v1/jobs/${encodeURIComponent(jobId)}/events`;
-      const response = await fetch(url, { headers, signal: ctrl.signal });
-      if (!response.ok || !response.body) {
-        throw new Error(`HTTP ${response.status}`);
+    // ─── Resilient stream: native EventSource + Last-Event-ID resume,
+    // online/offline awareness, and periodic terminal-status polling.
+    //
+    // EventSource is significantly more resilient than fetch+reader:
+    //   • Auto-reconnects on network drops with exponential backoff.
+    //   • Sends Last-Event-ID header on reconnect — server replays.
+    //   • Survives Chrome background-tab throttling without hanging.
+    //
+    // EventSource cannot set custom headers, so auth is via ?token= query
+    // param (handled by require_api_key in api/dependencies.py).
+    //
+    // Defensive layers stacked on top of EventSource's built-ins:
+    //   1. Online/offline listeners — close on offline, re-open on online.
+    //   2. Periodic /v1/jobs/{id} poll every 5 s — detects terminal status
+    //      even if EventSource never closes (e.g. proxy ate close frame).
+    //   3. Exponential backoff cap to avoid hammering the server.
+
+    let es = null;
+    let pollTimer = null;
+    let backoffMs = 500;
+    const BACKOFF_CAP_MS = 8000;
+    let terminal = false;
+
+    const feedEvent = (eventType, data, lastEventId) => {
+      if (lastEventId) {
+        const v = parseInt(lastEventId, 10);
+        if (!Number.isNaN(v)) lastSeq = v;
       }
-      const reader = response.body.getReader();
-      const dec = new TextDecoder("utf-8");
-      let buf = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf("\n\n")) !== -1) {
-          const ev = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          if (ev.trim() && !ev.trim().startsWith(":")) consumeChunk(ev);
-        }
+      consumeChunk(`event: ${eventType}\ndata: ${data}\n\n`);
+    };
+
+    const ANTHROPIC_EVENTS = [
+      "message_start",
+      "message_delta",
+      "message_stop",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "ping",
+      "error",
+    ];
+    const LIFECYCLE_EVENTS = ["job_started", "job_finished", "job_error"];
+
+    const buildUrl = () => {
+      const u = new URL(
+        `/v1/jobs/${encodeURIComponent(jobId)}/events`,
+        window.location.origin
+      );
+      if (AUTH) u.searchParams.set("token", AUTH);
+      // EventSource sends Last-Event-ID natively after first connect,
+      // but on initial open it doesn't — pass via query param for resume.
+      if (lastSeq >= 0) u.searchParams.set("last_event_id", String(lastSeq));
+      return u.toString();
+    };
+
+    const closeStream = () => {
+      if (es) {
+        try { es.close(); } catch { /* ignore */ }
+        es = null;
       }
     };
 
-    // Page Visibility — when the tab regains focus, force-reconnect with the
-    // last seen seq. Background tabs sometimes throttle fetch readers; this
-    // guarantees catch-up replay of any events emitted while we were hidden.
-    let pendingResume = false;
-    const onVisibility = () => {
-      if (document.visibilityState !== "visible") return;
-      pendingResume = true;
-      try {
-        ctrl.abort(); // openStream's reader.read() rejects → outer loop reconnects
-      } catch {
-        /* ignore */
-      }
+    const finishLoop = async () => {
+      terminal = true;
+      closeStream();
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     };
-    document.addEventListener("visibilitychange", onVisibility);
+
+    const openStream = () => {
+      closeStream();
+      es = new EventSource(buildUrl());
+      es.onopen = () => { backoffMs = 500; };
+      es.onerror = () => {
+        // EventSource auto-reconnects, but if browser gives up (e.g. 401)
+        // we manually re-open after backoff with the latest lastSeq.
+        if (terminal) return;
+        if (es && es.readyState === EventSource.CLOSED) {
+          setTimeout(() => {
+            if (terminal) return;
+            backoffMs = Math.min(backoffMs * 2, BACKOFF_CAP_MS);
+            openStream();
+          }, backoffMs);
+        }
+      };
+      const wire = (name) => {
+        es.addEventListener(name, (e) => {
+          if (terminal) return;
+          feedEvent(name, e.data || "", e.lastEventId);
+          if (name === "job_finished" || name === "job_error") {
+            void finishLoop();
+          }
+        });
+      };
+      ANTHROPIC_EVENTS.forEach(wire);
+      LIFECYCLE_EVENTS.forEach(wire);
+    };
+
+    // Fallback poll: if EventSource somehow misses the terminal lifecycle
+    // event, the job-status poll detects it and closes the loop.
+    pollTimer = setInterval(async () => {
+      if (terminal) return;
+      try {
+        const job = await api(`/v1/jobs/${encodeURIComponent(jobId)}`);
+        if (job && ["done", "error", "cancelled"].includes(job.status)) {
+          await finishLoop();
+        }
+      } catch { /* network blip — ignore */ }
+    }, 5000);
+
+    // Online/offline: pause on offline, resume on online with full replay.
+    const onOnline = () => {
+      if (terminal) return;
+      backoffMs = 500;
+      openStream();
+    };
+    const onOffline = () => {
+      closeStream();
+    };
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+
+    // Hook user-cancel: ctrl.abort() must also tear down EventSource.
+    ctrl.signal.addEventListener("abort", () => { void finishLoop(); });
 
     try {
-      // Auto-reconnect loop: if the stream drops while the job is still
-      // running, reconnect with the last seen seq.
-      while (true) {
-        try {
-          await openStream();
-        } catch (e) {
-          if (!pendingResume && e.name !== "AbortError") {
-            console.warn("event stream interrupted:", e);
-          }
-        }
-        pendingResume = false;
-        const job = await api(`/v1/jobs/${encodeURIComponent(jobId)}`).catch(() => null);
-        if (!job) break;
-        if (["done", "error", "cancelled"].includes(job.status)) break;
-        // job still running but our connection dropped — wait then resume
-        await new Promise((r) => setTimeout(r, 400));
-        ctrl = new AbortController();
+      openStream();
+      // Wait until the loop signals terminal (lifecycle event OR poll).
+      while (!terminal) {
+        await new Promise((r) => setTimeout(r, 250));
       }
     } finally {
-      document.removeEventListener("visibilitychange", onVisibility);
+      terminal = true;
+      closeStream();
+      if (pollTimer) clearInterval(pollTimer);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
       assistant.streaming = false;
       node.classList.remove("streaming");
       if (assistant.error) node.classList.add("error");

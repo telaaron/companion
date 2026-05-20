@@ -140,6 +140,16 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
                             {"type": "text", "text": memory_block},
                         ]
 
+                # Inject project workspace_path so file tools resolve
+                # relative paths (e.g. "README.md") against the project
+                # root instead of the server's CWD (BUG-002).
+                ws = (project.get("workspace_path") or "").strip()
+                if ws:
+                    pm = payload.get("metadata")
+                    if pm is None:
+                        payload["metadata"] = {}
+                    payload["metadata"].setdefault("workspace_path", ws)
+
         request = _build_messages_request(payload)
 
         # Route through the model_router so providers see their native model

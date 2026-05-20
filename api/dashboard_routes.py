@@ -1445,6 +1445,113 @@ async def stream_job_events(
     )
 
 
+@dashboard_router.get("/v1/jobs/{job_id}/output")
+async def get_job_output_route(
+    job_id: str, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    """Return extracted text + tool-call output for a job.
+
+    Parses stored Anthropic-SSE chunks to produce human-readable content
+    blocks suitable for display in the routines history panel.
+    """
+    job = datastore.get_agent_job(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+
+    events = datastore.list_agent_job_events(job_id, limit=10_000)
+
+    text_blocks: list[str] = []
+    tool_blocks: list[dict[str, Any]] = []
+
+    # Track state per content-block index across events
+    text_by_index: dict[int, str] = {}
+    tool_name_by_index: dict[int, str] = {}
+    tool_input_by_index: dict[int, str] = {}
+    stop_order: list[tuple[int, str]] = []  # (index, block_type)
+
+    for ev in events:
+        if ev["event_type"] != "sse" or not ev["data"]:
+            continue
+
+        # Each stored chunk is one Anthropic-SSE frame
+        for raw_block in ev["data"].split("\n\n"):
+            raw_block = raw_block.strip()
+            if not raw_block:
+                continue
+            data_line = None
+            for line in raw_block.split("\n"):
+                if line.startswith("data:"):
+                    data_line = line[len("data:") :].strip()
+                    break
+            if not data_line:
+                continue
+            try:
+                msg = json.loads(data_line)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = msg.get("type", "")
+            idx = msg.get("index", 0)
+
+            if msg_type == "content_block_start":
+                cb = msg.get("content_block", {})
+                if cb.get("type") == "text":
+                    text_by_index[idx] = ""
+                    stop_order.append((idx, "text"))
+                elif cb.get("type") == "tool_use":
+                    tool_name_by_index[idx] = cb.get("name", "?")
+                    tool_input_by_index[idx] = ""
+                    stop_order.append((idx, "tool_use"))
+
+            elif msg_type == "content_block_delta":
+                delta = msg.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    text_by_index[idx] = text_by_index.get(idx, "") + delta.get(
+                        "text", ""
+                    )
+                elif delta.get("type") == "input_json_delta":
+                    tool_input_by_index[idx] = tool_input_by_index.get(
+                        idx, ""
+                    ) + delta.get("partial_json", "")
+
+            elif msg_type == "content_block_stop":
+                if text_by_index.get(idx):
+                    text_blocks.append(text_by_index.pop(idx))
+                elif idx in tool_name_by_index:
+                    tool_blocks.append(
+                        {
+                            "name": tool_name_by_index.pop(idx, "?"),
+                            "input": tool_input_by_index.pop(idx, ""),
+                        }
+                    )
+
+    # Preserve creation order
+    ordered_text: list[str] = []
+    ordered_tools: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for idx, bt in stop_order:
+        if idx in seen:
+            continue
+        seen.add(idx)
+        if bt == "text" and idx in text_by_index:
+            ordered_text.append(text_by_index[idx])
+        elif bt == "tool_use":
+            ordered_tools.append(
+                {
+                    "name": tool_name_by_index.get(idx, "?"),
+                    "input": tool_input_by_index.get(idx, ""),
+                }
+            )
+
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "unknown"),
+        "model": job.get("model", ""),
+        "text_blocks": ordered_text if ordered_text else text_blocks,
+        "tool_blocks": ordered_tools if ordered_tools else tool_blocks,
+    }
+
+
 # ============================================================ Routines
 
 _VALID_TRIGGER_TYPES = frozenset({"cron", "manual", "webhook"})

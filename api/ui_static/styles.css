@@ -90,6 +90,13 @@
   box-sizing: border-box;
 }
 
+/* Lucide icons — ensure SVGs inherit parent color / size */
+[data-lucide] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 html,
 body {
   margin: 0;
@@ -272,8 +279,9 @@ hr {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  opacity: 0.8;
 }
 
 .nav-section {
@@ -313,13 +321,13 @@ hr {
   color: var(--accent);
 }
 .nav-icon {
-  font-size: 18px;
-  line-height: 1;
-  width: 22px;
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--fg-faint);
+  flex-shrink: 0;
 }
 
 .nav-footer {
@@ -825,13 +833,17 @@ hr {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--fg-muted);
-  font-size: 16px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   transition: background 120ms, border-color 120ms, color 120ms;
+}
+
+.mic-btn i[data-lucide] {
+  width: 18px;
+  height: 18px;
 }
 .mic-btn:hover {
   background: var(--bg-overlay);
@@ -868,7 +880,8 @@ hr {
   gap: var(--sp-3);
 }
 .empty .empty-icon {
-  font-size: 32px;
+  width: 28px;
+  height: 28px;
   color: var(--fg-faint);
   opacity: 0.5;
 }
@@ -1404,8 +1417,9 @@ hr {
 
 .folder-icon {
   color: var(--fg-muted);
-  width: 16px;
-  text-align: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 /* ============================================================ Chat title polish */
@@ -1847,10 +1861,14 @@ hr {
   border-radius: var(--r-md);
   background: var(--bg-elevated);
   color: var(--fg-muted);
-  font-size: 15px;
   cursor: pointer;
   transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
   font-family: inherit;
+}
+
+.icon-btn i[data-lucide] {
+  width: 15px;
+  height: 15px;
 }
 
 .icon-btn:hover {
@@ -2580,11 +2598,12 @@ hr {
 /* ============================================================ Routines page */
 
 .routines-table {
-  table-layout: fixed;
+  table-layout: auto;
 }
 
 .routines-table td:last-child {
   white-space: nowrap;
+  min-width: 200px;
 }
 
 .routines-history {
@@ -2645,7 +2664,6 @@ hr {
 
 .icon-btn {
   padding: 4px 8px;
-  font-size: var(--fs-14);
   line-height: 1;
 }
 
@@ -2658,4 +2676,63 @@ hr {
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--sp-3);
+}
+
+/* Template picker (routines page) */
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--sp-3);
+}
+
+.template-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-4);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+  background: var(--bg-input);
+}
+
+.template-card:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.template-card-name {
+  font-weight: 600;
+  margin-bottom: var(--sp-1);
+}
+
+.template-card-desc {
+  line-height: 1.45;
+}
+
+/* Job output viewer (routines history) */
+.job-output-panel {
+  margin-top: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-input);
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.job-output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+  font-size: var(--fs-13);
+}
+
+.job-output-body {
+  padding: var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

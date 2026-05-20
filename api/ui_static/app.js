@@ -202,6 +202,9 @@
           ? ` data-filekind="${escapeHtml(/^Write$/i.test(o.name) ? "write" : "read")}"`
           : "";
         const clickable = isFileOp && filePath ? ` tool-block-clickable` : "";
+        const clickInline = isFileOp && filePath
+          ? ` style="cursor:pointer" title="Click to preview in panel"`
+          : "";
         const header =
           `<span class="tool-glyph">${escapeHtml(o.icon || "●")}</span>` +
           `<span class="tool-name">${escapeHtml(o.name || "")}</span>` +
@@ -209,7 +212,7 @@
         const body = o.body
           ? `<details class="tool-body"><summary>show output</summary><pre>${escapeHtml(o.body)}</pre></details>`
           : "";
-        return `<div class="tool-block${clickable}"${dataPath}${dataKind}>${header}${body}</div>`;
+        return `<div class="tool-block${clickable}"${dataPath}${dataKind}${clickInline}>${header}${body}</div>`;
       } catch {
         return "";
       }
@@ -251,6 +254,7 @@
       b.classList.toggle("active", b.dataset.route === name)
     );
     ROUTES[name].render();
+    if (typeof lucide !== "undefined") lucide.createIcons();
   }
 
   function pageHeader({ title, sub, actions = [] }) {
@@ -307,7 +311,7 @@
                 class: "folder-item",
                 onclick: () => load(data.parent),
               },
-              el("span", { class: "folder-icon" }, "↰"),
+              el("i", { "data-lucide": "arrow-up", class: "folder-icon" }),
               el("span", {}, "..")
             )
           );
@@ -320,7 +324,7 @@
                 class: "folder-item",
                 onclick: () => load(c.path),
               },
-              el("span", { class: "folder-icon" }, "▸"),
+              el("i", { "data-lucide": "folder", class: "folder-icon" }),
               el("span", {}, c.name)
             )
           );
@@ -794,7 +798,7 @@
         el(
           "div",
           { class: "empty" },
-          el("div", { class: "empty-icon" }, "✦"),
+          el("i", { "data-lucide": "message-circle", class: "empty-icon" }),
           el("div", { class: "empty-title" }, "Pick or start a session"),
           el(
             "div",
@@ -830,7 +834,7 @@
       class: "mic-btn",
       type: "button",
       title: "Record voice input",
-    }, "\uD83C\uDFA4");
+    }, el("i", { "data-lucide": "mic" }));
 
     async function _start() {
       try {
@@ -884,15 +888,28 @@
           headers: { Authorization: "Bearer " + AUTH },
           body: form,
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          let msg = `Transcription error (${res.status})`;
+          try {
+            const body = await res.json();
+            if (body.detail) msg = body.detail;
+          } catch {
+            /* use default message */
+          }
+          toastShow(msg, "error");
+          return;
+        }
         const data = await res.json();
         const text = (data.text || "").trim();
-        if (!text) return;
+        if (!text) {
+          toastShow("Voice recording captured but no speech detected.", "warning");
+          return;
+        }
         ta.value = ta.value ? ta.value + " " + text : text;
         ta.dispatchEvent(new Event("input"));
         ta.focus();
       } catch (_e) {
-        toastShow("Transcription failed", "error");
+        toastShow("Voice transcription failed — is the server reachable?", "error");
       }
     }
 
@@ -1009,7 +1026,7 @@
         title: "Save key insights to Obsidian vault",
         onclick: () => saveSessionToVault(session, modelSelect.value, messages),
       },
-      "📓"
+      el("i", { "data-lucide": "notebook-pen" })
     );
 
     const deleteBtn = el(
@@ -1024,7 +1041,7 @@
           await renderChat();
         },
       },
-      "✕"
+      el("i", { "data-lucide": "x" })
     );
 
     const titleRow = el(
@@ -1316,7 +1333,7 @@
         type: "button",
         title: "Pin to project memory",
       },
-      "📌"
+      el("i", { "data-lucide": "pin" })
     );
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -1747,7 +1764,7 @@
               title: "Edit",
               onclick: () => editProject(p),
             },
-            "✎"
+            el("i", { "data-lucide": "pencil" })
           ),
           el(
             "button",
@@ -1764,7 +1781,7 @@
                 setRoute("chat");
               },
             },
-            "+"
+            el("i", { "data-lucide": "plus" })
           ),
           el(
             "button",
@@ -1779,7 +1796,7 @@
                 renderProjects();
               },
             },
-            "✕"
+            el("i", { "data-lucide": "x" })
           )
         )
       );
@@ -1833,7 +1850,8 @@
 
       // Memories panel: list pinned memories with delete + session link.
       const memPanel = el("div", { class: "project-memories" });
-      const memTitle = el("div", { class: "project-memories-title" }, "📌 Memories");
+      const memTitle = el("div", { class: "project-memories-title" },
+        el("i", { "data-lucide": "pin", style: { marginRight: "6px" } }), "Memories");
       memPanel.appendChild(memTitle);
 
       async function refreshMemories() {
@@ -1853,7 +1871,7 @@
             el(
               "div",
               { class: "project-sessions-empty" },
-              "No pinned memories yet — use the 📌 button on an assistant reply"
+              "No pinned memories yet — use the pin button on an assistant reply"
             )
           );
           return;
@@ -1883,7 +1901,7 @@
                   setRoute("chat");
                 },
               },
-              "↗"
+              el("i", { "data-lucide": "external-link" })
             );
             meta.appendChild(link);
           }
@@ -1907,7 +1925,7 @@
                 }
               },
             },
-            "✕"
+            el("i", { "data-lucide": "x" })
           );
           row.append(snippet, meta, delBtn);
           memPanel.appendChild(row);
@@ -2749,7 +2767,7 @@
         el(
           "div",
           { class: "empty" },
-          el("div", { class: "empty-icon" }, "🔌"),
+          el("i", { "data-lucide": "cable", class: "empty-icon" }),
           el("div", { class: "empty-title" }, "No MCP servers discovered"),
           el(
             "div",
@@ -2862,7 +2880,7 @@
         el(
           "div",
           { class: "empty" },
-          el("div", { class: "empty-icon" }, "★"),
+          el("i", { "data-lucide": "sparkles", class: "empty-icon" }),
           el("div", { class: "empty-title" }, "No skills installed"),
           el("div", { class: "empty-sub" }, "Browse the catalog below and click Install")
         )
@@ -2920,7 +2938,7 @@
         el(
           "div",
           { class: "empty" },
-          el("div", { class: "empty-icon" }, "📦"),
+          el("i", { "data-lucide": "package-search", class: "empty-icon" }),
           el("div", { class: "empty-title" }, "No legacy skills found"),
           el(
             "div",
@@ -2962,7 +2980,7 @@
         el(
           "div",
           { class: "empty" },
-          el("div", { class: "empty-icon" }, "🌐"),
+          el("i", { "data-lucide": "globe", class: "empty-icon" }),
           el("div", { class: "empty-title" }, "No catalog available"),
           el(
             "div",
@@ -3035,7 +3053,7 @@
               type: "button",
               onclick: () => openSetupWizard(),
             },
-            "✦ Setup wizard"
+            el("i", { "data-lucide": "wand-2", style: { marginRight: "6px" } }), "Setup wizard"
           ),
         ],
       })
@@ -3369,7 +3387,7 @@
                     title: "Edit",
                     onclick: () => beginEdit(),
                   },
-                  "✎"
+                  el("i", { "data-lucide": "pencil" })
                 )
               : null
           )
@@ -3821,10 +3839,10 @@
     if (!tag) return;
     try {
       const r = await fetch("/health");
-      tag.textContent = r.ok ? "● online" : "● degraded";
+      tag.textContent = r.ok ? "online" : "degraded";
       tag.style.color = r.ok ? "var(--success)" : "var(--warning)";
     } catch {
-      tag.textContent = "○ offline";
+      tag.textContent = "offline";
       tag.style.color = "var(--error)";
     }
   }
@@ -3979,7 +3997,7 @@
           _previewPanel = null;
         },
       },
-      "✕"
+      el("i", { "data-lucide": "x" })
     );
     const header = el(
       "div",
@@ -4482,6 +4500,19 @@
     const view = $("#view");
     view.innerHTML = "";
 
+    // Load upstream models for the drawer model-picker.
+    const upstreamModels = await api("/v1/models/upstream").catch(() => ({
+      providers: [],
+    }));
+    const modelOptions = [];
+    for (const p of upstreamModels.providers || []) {
+      for (const m of p.models || []) {
+        modelOptions.push(`${p.provider}/${m}`);
+      }
+    }
+    const defaultModel =
+      modelOptions[0] || "deepseek/deepseek-v4-flash";
+
     let routines = [];
     let drawerOpen = false;
     let editTarget = null; // routine id being edited, or null for create
@@ -4492,10 +4523,16 @@
     let dTriggerType = "cron";
     let dCronExpr = "0 9 * * *";
     let dCronTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    let dPayloadText = JSON.stringify({ model: "", messages: [] }, null, 2);
+    let dModel = defaultModel;
+    let dPayloadText = JSON.stringify({ model: defaultModel, messages: [] }, null, 2);
     let dEnabled = true;
     let dProjectId = null;
     let dPayloadValid = true;
+
+    // ---- output viewer state (shown below history panel)
+    let outputVisible = false;
+    let outputJobId = null;
+    const outputSection = el("div", { class: "job-output-panel", style: "display:none" });
 
     // ---- history panel state (shown below table)
     let historyRoutineId = null;
@@ -4598,10 +4635,15 @@
                 const res = await api(`/v1/routines/${r.id}/run`, { method: "POST" });
                 toastShow("Routine fired — job " + (res.job?.id || ""), "ok");
                 await loadRoutines();
-                // Switch to Jobs page deep-link if job exists
+                // Show the history + job output for this routine
                 if (res.job?.id) {
-                  location.hash = "audit";
-                  setRoute("audit");
+                  if (historyRoutineId !== r.id) {
+                    historyRoutineId = r.id;
+                    historyOffset = 0;
+                    histSection.style.display = "";
+                  }
+                  await loadHistory();
+                  viewJobOutput(res.job.id);
                 }
               } catch (err) {
                 toastShow(`Run failed: ${err.message}`, "error");
@@ -4750,7 +4792,23 @@
             {},
             el("td", { class: "mono" }, run.id),
             el("td", {}, fmtStatus(run.status)),
-            el("td", { class: "mono" }, run.job_id || "—"),
+            el(
+              "td",
+              { class: "mono" },
+              run.job_id
+                ? el(
+                    "a",
+                    {
+                      href: "#",
+                      onclick: (e) => {
+                        e.preventDefault();
+                        viewJobOutput(run.job_id);
+                      },
+                    },
+                    run.job_id
+                  )
+                : "—"
+            ),
             el("td", {}, fmtTime(run.started_at)),
             el("td", {}, run.finished_at ? fmtTime(run.finished_at) : "—")
           )
@@ -4796,6 +4854,62 @@
       }
     }
 
+    // ---- job output viewer
+    async function viewJobOutput(jobId) {
+      // Hide any existing output panel
+      outputJobId = jobId;
+      outputVisible = true;
+      outputSection.style.display = "";
+      outputSection.innerHTML =
+        '<div class="job-output-header">' +
+        '<span>Job ' + jobId + '</span>' +
+        '<button class="btn btn-sm ghost" onclick="this.closest(\'.job-output-panel\').style.display=\'none\'">Close</button>' +
+        '</div>' +
+        '<div class="job-output-body">Loading…</div>';
+      const bodyEl = outputSection.querySelector(".job-output-body");
+
+      try {
+        const res = await api(`/v1/jobs/${encodeURIComponent(jobId)}/output`);
+        const status = res.status || "unknown";
+        let output = "";
+
+        // Build text from text_blocks
+        if (res.text_blocks && res.text_blocks.length) {
+          output += res.text_blocks.join("\n\n");
+        }
+
+        // Append tool calls
+        if (res.tool_blocks && res.tool_blocks.length) {
+          if (output) output += "\n\n";
+          for (const tb of res.tool_blocks) {
+            const name = tb.name || "?";
+            let inputStr = tb.input || "";
+            try {
+              // Pretty-print tool input JSON if possible
+              const parsed = JSON.parse(inputStr);
+              inputStr = JSON.stringify(parsed, null, 2);
+            } catch (_) { /* leave as-is */ }
+            output += "[Tool: " + name + "]\n" + inputStr + "\n\n";
+          }
+        }
+
+        if (!output.trim()) {
+          output = "(no text output — job status: " + status + ")";
+        }
+
+        bodyEl.textContent = output;
+      } catch (err) {
+        bodyEl.textContent = "Failed to load output: " + (err.message || err);
+      }
+    }
+
+    function closeJobOutput() {
+      outputVisible = false;
+      outputJobId = null;
+      outputSection.style.display = "none";
+      outputSection.innerHTML = "";
+    }
+
     // ---- drawer: create / edit
     function resetDrawerState(r = null) {
       editTarget = r ? r.id : null;
@@ -4814,9 +4928,11 @@
       }
       try {
         const p = r ? JSON.parse(r.payload || "{}") : { model: "", messages: [] };
+        dModel = p.model || defaultModel;
         dPayloadText = JSON.stringify(p, null, 2);
       } catch (_) {
-        dPayloadText = JSON.stringify({ model: "", messages: [] }, null, 2);
+        dModel = defaultModel;
+        dPayloadText = JSON.stringify({ model: defaultModel, messages: [] }, null, 2);
       }
       dPayloadValid = true;
     }
@@ -4961,6 +5077,26 @@
       manualPanel.appendChild(el("p", { class: "muted fs-12" }, 'Triggered manually via the UI "Run now" button only.'));
       webhookPanel.appendChild(el("p", { class: "muted fs-12" }, 'Triggered via POST /v1/routines/{id}/trigger with X-Routine-Secret header.'));
 
+      // -- model picker
+      const modelSelect = el("select", { class: "form-input" });
+      modelOptions.forEach((m) => {
+        modelSelect.appendChild(
+          el("option", { value: m, selected: m === dModel }, m)
+        );
+      });
+      modelSelect.addEventListener("change", () => {
+        dModel = modelSelect.value;
+        // Sync the selected model into the payload JSON textarea.
+        try {
+          const p = JSON.parse(payloadInput.value || dPayloadText);
+          p.model = dModel;
+          payloadInput.value = JSON.stringify(p, null, 2);
+          dPayloadText = payloadInput.value;
+        } catch (_) {
+          // If JSON is invalid, leave the textarea alone.
+        }
+      });
+
       // -- payload editor
       const payloadError = el("div", { class: "form-error", style: "display:none" }, "");
       const saveBtn = el("button", { class: "btn primary", onclick: saveRoutine }, editTarget ? "Save changes" : "Create");
@@ -4973,9 +5109,13 @@
           try {
             const parsed = JSON.parse(payloadInput.value);
             dPayloadText = payloadInput.value;
+            // Sync model back from parsed payload
+            if (parsed.model) dModel = parsed.model;
             dPayloadValid = true;
             payloadError.style.display = "none";
             saveBtn.disabled = false;
+            // Update model select to match
+            if (parsed.model) modelSelect.value = parsed.model;
           } catch (e) {
             dPayloadValid = false;
             payloadError.textContent = `Invalid JSON: ${e.message}`;
@@ -5066,7 +5206,8 @@
             "div",
             { class: "drawer-header" },
             el("h2", { class: "fs-15" }, title),
-            el("button", { class: "ghost icon-btn", onclick: closeDrawer }, "✕")
+            el("button", { class: "ghost icon-btn", onclick: closeDrawer },
+              el("i", { "data-lucide": "x" }))
           ),
           el("div", { class: "form-label" }, "Name"),
           nameInput,
@@ -5075,6 +5216,9 @@
           el("div", { class: "form-label", style: "margin-top:12px" }, "Trigger"),
           triggerTabs,
           el("div", { style: "margin-top:8px" }, cronPanel, manualPanel, webhookPanel),
+          el("div", { class: "form-label", style: "margin-top:12px" }, "Model"),
+          el("div", { class: "muted fs-12", style: "margin-bottom:4px" }, "Select the model that will execute this routine"),
+          modelSelect,
           el("div", { class: "form-label", style: "margin-top:12px" }, "Payload (JSON)"),
           el("div", { class: "muted fs-12", style: "margin-bottom:4px" }, "Must include model and messages fields"),
           payloadInput,
@@ -5153,7 +5297,8 @@
             "div",
             { class: "drawer-header" },
             el("h2", { class: "fs-15" }, "From template…"),
-            el("button", { class: "ghost icon-btn", onclick: closeTemplateModal }, "✕")
+            el("button", { class: "ghost icon-btn", onclick: closeTemplateModal },
+              el("i", { "data-lucide": "x" }))
           ),
           el("p", { class: "muted fs-12", style: "margin-bottom:12px" }, "Pick a starter routine and fill in the details."),
           grid
@@ -5286,7 +5431,7 @@
       tbody
     );
 
-    const body = el("div", { class: "page-body" }, table, histSection);
+    const body = el("div", { class: "page-body" }, table, histSection, outputSection);
 
     const page = el(
       "div",

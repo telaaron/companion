@@ -300,6 +300,78 @@ async def stop_all() -> None:
 
 _CLAUDE_DESKTOP_CONFIG = "Library/Application Support/Claude/claude_desktop_config.json"
 
+_CREDENTIAL_ARG_KEYS = {
+    "--api-key",
+    "--token",
+    "--auth",
+    "--secret",
+    "--password",
+    "--api-token",
+    "--access-token",
+    "--bearer",
+    "--key",
+    "-H",
+    "--header",
+    "--authorization",
+}
+_CREDENTIAL_ARG_PREFIXES = ("Bearer ", "bearer ", "Basic ", "basic ")
+
+
+def _mask_credentials_in_args(args: list[str]) -> list[str]:
+    """Replace credential values in CLI args with masked placeholders."""
+    if not args:
+        return args
+    masked = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        next_idx = i + 1
+        # Check if this arg is a known credential flag
+        if arg in _CREDENTIAL_ARG_KEYS and next_idx < len(args):
+            masked.append(arg)
+            masked.append(_mask_token_string(args[next_idx]))
+            i += 2
+            continue
+        # Check if this arg is a --key=value pattern
+        for flag in _CREDENTIAL_ARG_KEYS:
+            if arg.startswith(flag + "="):
+                prefix = flag + "="
+                masked.append(prefix + _mask_token_string(arg[len(prefix) :]))
+                i += 1
+                break
+        else:
+            # Check if the arg value itself looks like a credential
+            if _looks_like_credential(arg):
+                masked.append(_mask_token_string(arg))
+            else:
+                masked.append(arg)
+            i += 1
+    return masked
+
+
+def _looks_like_credential(value: str) -> bool:
+    """Heuristic: does this value look like a secret token?"""
+    if not value or len(value) < 16:
+        return False
+    # Hex strings >= 32 chars (common for API keys/tokens)
+    if len(value) >= 32 and all(c in "0123456789abcdefABCDEF" for c in value):
+        return True
+    # Bearer/Basic tokens
+    return any(value.startswith(p) for p in _CREDENTIAL_ARG_PREFIXES)
+
+
+def _mask_token_string(value: str) -> str:
+    """Mask a credential string: show first 4 + '****' + last 4."""
+    if not value or len(value) <= 8:
+        return "****"
+    # Strip Bearer/Basic prefix then mask the token
+    for prefix in _CREDENTIAL_ARG_PREFIXES:
+        if value.startswith(prefix):
+            token = value[len(prefix) :]
+            return prefix + _mask_token_string(token)
+    vis = min(4, len(value) // 4)
+    return value[:vis] + "****" + value[-vis:]
+
 
 def discover_claude_mcp_servers() -> list[dict[str, Any]]:
     """Read Claude Desktop's MCP config (if present) and return server specs."""
@@ -324,7 +396,7 @@ def discover_claude_mcp_servers() -> list[dict[str, Any]]:
             {
                 "name": name,
                 "command": conf.get("command"),
-                "args": list(conf.get("args", []) or []),
+                "args": _mask_credentials_in_args(list(conf.get("args", []) or [])),
                 "env": dict(conf.get("env", {}) or {}),
             }
         )

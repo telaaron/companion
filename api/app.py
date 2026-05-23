@@ -1,6 +1,7 @@
 """FastAPI application factory and configuration."""
 
 import traceback
+import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,16 @@ from .dashboard_routes import dashboard_router
 from .routes import router
 from .runtime import AppRuntime, startup_failure_message
 from .validation_log import summarize_request_validation_body
+
+# Pydantic emits noisy UserWarnings when serializing union-typed content blocks
+# (tool_use, tool_result, etc.) — the dump still works correctly. Suppress at
+# import time so multi-turn agent conversations don't flood the log.
+warnings.filterwarnings(
+    "ignore",
+    message=r"Pydantic serializer warnings:",
+    category=UserWarning,
+    module=r"pydantic\.main",
+)
 
 _UI_STATIC_DIR = Path(__file__).resolve().parent / "ui_static"
 

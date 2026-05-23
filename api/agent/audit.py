@@ -1,9 +1,11 @@
 """Audit trail for server-side tool execution.
 
 Each :class:`ToolInvocation` produced by the agent loop is emitted as a
-structured TRACE row via :func:`core.trace.trace_event`. The fields are
-sanitised — large or sensitive values (full file contents, raw bash output)
-are replaced with summaries so the audit log stays scannable.
+structured TRACE row via :func:`core.trace.trace_event` AND persisted as a
+SQLite ``audit_log`` row so the dashboard Insights page can display
+per-tool call/error/latency statistics.  Fields are sanitised — large or
+sensitive values (full file contents, raw bash output) are replaced with
+summaries so the audit log stays scannable.
 """
 
 from __future__ import annotations
@@ -24,8 +26,9 @@ def record_tool_invocation(
     request_id: str | None,
     workspace_root: str,
     duration_ms: int,
+    user_id: str = "default",
 ) -> None:
-    """Emit one ``api.agent_loop.tool_use`` audit event."""
+    """Emit one ``api.agent_loop.tool_use`` audit event (trace + SQLite)."""
     trace_event(
         stage="egress",
         event="api.agent_loop.tool_use",
@@ -42,6 +45,37 @@ def record_tool_invocation(
         exit_code=_extract_metric(invocation, "exit_code"),
         duration_ms=duration_ms,
     )
+    # Persist a SQLite row so insights._tool_stats() can aggregate per-tool
+    # call counts, latencies, and error rates.
+    _record_sqlite_audit(invocation, duration_ms=duration_ms, user_id=user_id)
+
+
+def _record_sqlite_audit(
+    invocation: ToolInvocation,
+    *,
+    duration_ms: int,
+    user_id: str = "default",
+) -> None:
+    """Write a ``category=tool, event=call`` row into the SQLite audit_log."""
+    try:
+        from api.datastore import record_audit
+
+        error_text = ""
+        if invocation.result.is_error:
+            error_text = str(invocation.result.content)[:500]
+        record_audit(
+            category="tool",
+            event="call",
+            detail=invocation.name,
+            metadata={
+                "duration_ms": duration_ms,
+                "error": error_text,
+            },
+            user_id=user_id,
+        )
+    except Exception:
+        # Best-effort: never let audit persistence block the agent loop.
+        pass
 
 
 def record_rate_limited(

@@ -307,7 +307,7 @@ it, dashboard opens, no terminal.
 
 **Files**:
 - New `tauri/` directory. Tauri config that:
-  - Spawns `fcc-server` on app start (bundled Python via `pyoxidizer`
+  - Spawns `companion-server` on app start (bundled Python via `pyoxidizer`
     or `briefcase`).
   - Opens the dashboard in a wkwebview at `http://127.0.0.1:8082/ui/`.
   - Tray icon with start/stop + open-dashboard.
@@ -385,7 +385,7 @@ visibility, the user can't tune it.
 **Files**:
 - `api/agent/insights.py` — runs nightly (via `cli/insight_cron.py` or
   a startup background task). Queries `audit_log` + `usage_events`,
-  writes summary to `~/.cache/free-claude-code/insights/YYYY-MM-DD.json`.
+  writes summary to `~/.cache/companion/insights/YYYY-MM-DD.json`.
 - New page module in `api/ui_static/app.js`.
 - Suggestions can include a one-click "apply" that PUTs the env change.
 
@@ -431,7 +431,7 @@ user's evolving rules without code edits.
 
 **Files**:
 - `api/agent/extras/preferences.py` — new tool `PreferenceSet(key, value)`
-  that writes into a `~/.config/free-claude-code/preferences.md` file
+  that writes into a `~/.config/companion/preferences.md` file
   prepended to every system prompt.
 - Identity prompt extended: "When the user expresses a long-term
   preference (e.g. 'always ask before X'), call PreferenceSet to record

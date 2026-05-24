@@ -31,15 +31,20 @@ def _env_files() -> tuple[Path, ...]:
 
     Order:
     1. ``./.env`` (project-local, lowest priority — useful for one-off overrides)
-    2. ``~/.config/free-claude-code/.env`` (global — wins by default so a
-       project's empty ``DEEPSEEK_API_KEY=`` cannot strip the real key)
-    3. ``$FCC_ENV_FILE`` (explicit override, highest priority)
+    2. ``~/.config/companion/.env`` (global — wins by default so a project's
+       empty ``DEEPSEEK_API_KEY=`` cannot strip the real key). The legacy
+       ``~/.config/free-claude-code/.env`` is honoured when present so users
+       who set up the proxy before the rename keep their config.
+    3. ``$COMPANION_ENV_FILE`` (or legacy ``$FCC_ENV_FILE``) — explicit
+       override, highest priority.
     """
     files: list[Path] = [
         Path(".env"),
         Path.home() / ".config" / "free-claude-code" / ".env",
+        Path.home() / ".config" / "companion" / ".env",
     ]
-    if explicit := os.environ.get("FCC_ENV_FILE"):
+    explicit = os.environ.get("COMPANION_ENV_FILE") or os.environ.get("FCC_ENV_FILE")
+    if explicit:
         files.append(Path(explicit))
     return tuple(files)
 
@@ -477,9 +482,9 @@ class Settings(BaseSettings):
 
     # ==================== Self-modification (preferences) ====================
     # Markdown file prepended to every agent system prompt as long-term prefs.
-    # Env-only: not settable from chat. Default: ~/.config/free-claude-code/preferences.md
+    # Env-only: not settable from chat. Default: ~/.config/companion/preferences.md
     preferences_path: str = Field(
-        default=str(Path.home() / ".config" / "free-claude-code" / "preferences.md"),
+        default=str(Path.home() / ".config" / "companion" / "preferences.md"),
         validation_alias="PREFERENCES_PATH",
         description="Path to the long-term user preferences Markdown file.",
     )

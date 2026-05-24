@@ -1,4 +1,4 @@
-/* Free Claude Code · onboarding wizard.
+/* Companion · onboarding wizard.
  *
  * 5-step flow: welcome → provider+key → agent mode → integrations → done.
  * All writes go through the existing /admin/api/config/{validate,apply} endpoints
@@ -99,7 +99,7 @@ function renderStepper() {
 
 function renderWelcome() {
   return `
-    <h2>Welcome to Free Claude Code</h2>
+    <h2>Welcome to Companion</h2>
     <p class="lead">
       A universal proxy that lets any AI provider speak the Anthropic API,
       with optional server-side tool execution. This 4-step wizard will get
@@ -134,7 +134,7 @@ function renderProvider() {
     ${cards}
     <label>API key</label>
     <input id="apiKeyInput" type="password" placeholder="sk-..." value="${escapeHtml(state.apiKey)}" />
-    <p class="field-hint">Stored in <code>~/.config/free-claude-code/.env</code> and never logged.</p>
+    <p class="field-hint">Stored in <code>~/.config/companion/.env</code> and never logged.</p>
   `;
 }
 

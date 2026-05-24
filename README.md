@@ -1,15 +1,31 @@
 <div align="center">
 
-# ✦ free-claude-code
+# ✦ companion
 
 **Your own AI workstation. Runs locally. Works with any provider.**
 
 One install. One URL. Chat, code, edit files, run commands — all with the
 model of your choice (DeepSeek, OpenRouter, Claude via API, …).
 
-[Install](#install-in-3-commands) · [First run](#first-run) · [What it can do](#what-it-can-do) · [Roadmap](#roadmap)
+[Download](#download) · [Install from source](#install-in-3-commands) · [First run](#first-run) · [What it can do](#what-it-can-do) · [Roadmap](#roadmap)
 
 </div>
+
+---
+
+## Download
+
+Pre-built desktop apps are published on the
+[**Releases page**](https://github.com/telaaron/companion/releases/latest) —
+double-click to install. No Python, no terminal, no setup.
+
+| Platform | File |
+|----------|------|
+| macOS (Apple Silicon) | `Companion-*-aarch64-apple-darwin.dmg` |
+| Windows 10/11 (x64) | `Companion-*-x86_64-pc-windows-msvc.exe` |
+| Linux (x64) | `Companion-*-x86_64-unknown-linux-gnu.AppImage` |
+
+See [docs/installing.md](docs/installing.md) for first-launch + Gatekeeper notes.
 
 ---
 
@@ -45,7 +61,7 @@ cd companion
 uv python install 3.14 && uv sync
 
 # 3. Start the server
-uv run fcc-server
+uv run companion-server
 ```
 
 Open **http://127.0.0.1:8082/ui** in your browser.
@@ -65,7 +81,7 @@ The dashboard opens to the **Setup wizard**. Four steps:
 
 That's it.
 
-> **Tip:** the wizard writes to `~/.config/free-claude-code/.env` and reloads
+> **Tip:** the wizard writes to `~/.config/companion/.env` and reloads
 > live — no restart needed.
 
 ---
@@ -163,7 +179,7 @@ Or manually:
 
 ```bash
 ANTHROPIC_BASE_URL=http://127.0.0.1:8082 \
-ANTHROPIC_AUTH_TOKEN=$(grep ANTHROPIC_AUTH_TOKEN ~/.config/free-claude-code/.env | cut -d= -f2) \
+ANTHROPIC_AUTH_TOKEN=$(grep ANTHROPIC_AUTH_TOKEN ~/.config/companion/.env | cut -d= -f2) \
 claude
 ```
 
@@ -194,7 +210,7 @@ terminal.
 
 ## Configuration
 
-All settings live in `~/.config/free-claude-code/.env`. Edit them through
+All settings live in `~/.config/companion/.env`. Edit them through
 **Env vault** in the dashboard or directly in the file.
 
 Most-asked vars:
@@ -270,7 +286,7 @@ Want it as a launchd / systemd service? Open an issue.
 
 Python · FastAPI · uv · SQLite · pytest · loguru · ruff · ty · vanilla JS
 
-Originally a fork of [Alishahryar1/free-claude-code](https://github.com/Alishahryar1/free-claude-code) —
+Originally a fork of [Alishahryar1/companion](https://github.com/Alishahryar1/companion) —
 massive hat tip for the foundation. Everything in `api/agent/`,
 `core/tools/`, the SPA shell, plugins, and the dashboard is the next
 generation.

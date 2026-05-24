@@ -37,7 +37,7 @@ from .pricing import known_image_prices, known_token_prices, pricing_snapshot
 
 dashboard_router = APIRouter()
 
-_ENV_FILE = Path.home() / ".config" / "free-claude-code" / ".env"
+_ENV_FILE = Path.home() / ".config" / "companion" / ".env"
 _ROOT_FILES_ALLOWLIST = (
     "AGENTS.md",
     "CLAUDE.md",
@@ -667,7 +667,7 @@ class EnvSetIn(BaseModel):
 
 @dashboard_router.put("/v1/env")
 async def env_set(body: EnvSetIn, _auth=Depends(require_api_key)) -> dict[str, Any]:
-    """Upsert a single env key in ``~/.config/free-claude-code/.env``.
+    """Upsert a single env key in ``~/.config/companion/.env``.
 
     Existing comments and key order are preserved. The value is written
     verbatim without quoting; clients are expected to send the raw value.

@@ -23,7 +23,7 @@ Stack:      Python 3.14, FastAPI + uvicorn, SQLite + FTS5, vanilla JS SPA
 Pkg mgr:    uv (uv sync, uv run <cmd>)
 Lint/type:  uv run ruff format / ruff check / ty check
 Tests:      uv run pytest -v --tb=short   (1468+ baseline, all must stay green)
-Server:     uv run fcc-server (binds 127.0.0.1:8082 by default)
+Server:     uv run companion-server (binds 127.0.0.1:8082 by default)
 UI:         http://127.0.0.1:8082/ui/
 Auth:       Authorization: Bearer $ANTHROPIC_AUTH_TOKEN
 ```

@@ -61,6 +61,6 @@ so the table stays empty.
 ```bash
 uv run ruff format --check && uv run ruff check && uv run ty check
 uv run pytest -v --tb=short
-uv run fcc-server &
+uv run companion-server &
 # open http://127.0.0.1:8082/ui/, send 3 messages, observe pill updates
 ```

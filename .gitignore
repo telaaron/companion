@@ -2,7 +2,9 @@ __pycache__
 .claude
 # Tauri / Rust build artefacts
 tauri/src-tauri/target/
-# PyOxidizer build artefacts (the dist binary is committed by CI via artifact upload)
+# Tauri build-script generated permission schemas — regenerated on every build
+tauri/src-tauri/gen/schemas/
+# PyInstaller build artefacts (the dist binary is committed by CI via artifact upload)
 packaging/build/
 packaging/dist/
 .cursor

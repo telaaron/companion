@@ -1,14 +1,18 @@
 """SQLite-backed local datastore for the dashboard.
 
 Persists projects, sessions, messages, usage events, file edits, and audit
-log entries to ``~/.cache/free-claude-code/data.sqlite3``. Single-process,
+log entries to ``~/.cache/companion/data.sqlite3``. Single-process,
 single-user — opens its own connection per call to keep things simple
 (no connection pool needed at this scale).
+
+Legacy ``~/.cache/free-claude-code/data.sqlite3`` is migrated on first
+``init_schema()`` when present and the new location is empty.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import threading
 import time
@@ -20,13 +24,34 @@ from typing import Any
 
 from loguru import logger
 
-_DB_PATH = Path.home() / ".cache" / "free-claude-code" / "data.sqlite3"
+_DB_PATH = Path.home() / ".cache" / "companion" / "data.sqlite3"
+_LEGACY_DB_PATH = Path.home() / ".cache" / "free-claude-code" / "data.sqlite3"
 _LOCK = threading.Lock()
 _INIT_DONE = False
 
 
 def _ensure_path() -> None:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _migrate_legacy_db() -> None:
+    """One-shot copy of the pre-rename SQLite file (and its WAL siblings).
+
+    Triggered when the new ``~/.cache/companion/`` dir has no datastore yet
+    but the legacy ``~/.cache/free-claude-code/`` dir does. We copy rather
+    than move so an aborted migration leaves the old data intact.
+    """
+    if _DB_PATH.exists() or not _LEGACY_DB_PATH.exists():
+        return
+    _ensure_path()
+    # The WAL/SHM siblings live next to the main DB file; their names are
+    # ``data.sqlite3-wal`` / ``data.sqlite3-shm`` (the parent dir holds the
+    # ``free-claude-code`` identity, not the filename).
+    for filename in ("data.sqlite3", "data.sqlite3-wal", "data.sqlite3-shm"):
+        src = _LEGACY_DB_PATH.parent / filename
+        if src.exists():
+            shutil.copy2(src, _DB_PATH.parent / filename)
+    logger.info("Datastore: migrated legacy {} -> {}", _LEGACY_DB_PATH, _DB_PATH)
 
 
 @contextmanager
@@ -55,6 +80,7 @@ def init_schema() -> None:
         if _INIT_DONE:
             return
         _ensure_path()
+        _migrate_legacy_db()
         conn = sqlite3.connect(str(_DB_PATH), isolation_level=None, timeout=10.0)
         try:
             conn.execute("PRAGMA journal_mode=WAL")

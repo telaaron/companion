@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "free-claude-code"
+name = "companion"
 version = "2.0.0"
-description = "Middleware between Claude Code CLI (Anthropic API) and NVIDIA NIM"
+description = "Companion — self-hosted AI workstation: FastAPI proxy, dashboard, background agent loop, MCP passthrough, voice, routines"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -31,12 +31,11 @@ dependencies = [
 ]
 
 [project.scripts]
-fcc-server = "cli.entrypoints:serve"
-free-claude-code = "cli.entrypoints:serve"
-fcc-init = "cli.entrypoints:init"
-fcc-claude = "cli.entrypoints:launch_claude"
-ds = "cli.entrypoints:ds"
 companion = "cli.entrypoints:companion"
+companion-server = "cli.entrypoints:serve"
+companion-init = "cli.entrypoints:init"
+companion-claude = "cli.entrypoints:launch_claude"
+ds = "cli.entrypoints:ds"
 
 [project.optional-dependencies]
 voice = [
@@ -74,6 +73,8 @@ dev = [
     "ty>=0.0.34",
     "ruff>=0.15.12",
     "pytest-xdist>=3.8.0",
+    "pyinstaller>=6.20.0",
+    "pillow>=12.2.0",
 ]
 
 [tool.ruff]

@@ -7,7 +7,7 @@
 When the user expresses a durable preference ("you should always ask
 before deleting files"), the agent calls `PreferenceSet(key, value)`,
 which:
-1. Writes the rule into `~/.config/free-claude-code/preferences.md`
+1. Writes the rule into `~/.config/companion/preferences.md`
    (a file prepended to every system prompt).
 2. Echoes a one-line confirmation of what was recorded.
 3. Persists across sessions and chats.
@@ -28,7 +28,7 @@ which:
   call PreferenceSet to record it. Always summarise what you recorded
   in one short sentence."*
 - `config/settings.py` — `preferences_path` (default
-  `~/.config/free-claude-code/preferences.md`).
+  `~/.config/companion/preferences.md`).
 - `api/dashboard_routes.py` — `GET /v1/preferences`, `DELETE /v1/preferences/{key}`
   so users can audit + remove from the UI.
 - `api/ui_static/app.js` — Settings page → "Preferences" card listing

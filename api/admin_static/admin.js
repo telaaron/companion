@@ -411,7 +411,7 @@ async function apply() {
   await load();
   showMessage(
     pending.length
-      ? `Applied. Restart fcc-server to use: ${pending.join(", ")}`
+      ? `Applied. Restart companion-server to use: ${pending.join(", ")}`
       : "Applied",
     "ok",
   );

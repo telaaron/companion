@@ -109,7 +109,7 @@ log "cloudflared found: $(cloudflared --version 2>&1 | head -1)"
 # ---------------------------------------------------------------------------
 if ! curl -sf "http://${COMPANION_HOST}:${COMPANION_PORT}/healthz" &>/dev/null; then
     warn "Companion is not responding on http://${COMPANION_HOST}:${COMPANION_PORT}/healthz"
-    warn "Start it with:  uv run fcc-server"
+    warn "Start it with:  uv run companion-server"
     die  "Companion must be running on port $COMPANION_PORT before provisioning the tunnel."
 fi
 log "Companion healthz OK on port $COMPANION_PORT"

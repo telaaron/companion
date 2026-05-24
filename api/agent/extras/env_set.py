@@ -1,6 +1,6 @@
 """EnvSet tool — let the AI manage its own settings.
 
-Writes a single key into ``~/.config/free-claude-code/.env`` and invalidates
+Writes a single key into ``~/.config/companion/.env`` and invalidates
 the Settings cache so the change takes effect on the next request. The tool
 exposes the same surface as ``PUT /v1/env`` but callable from within the
 agent loop. Secret-named keys are accepted but the audit log records that
@@ -18,7 +18,7 @@ from core.tools.result import ToolResult
 from core.tools.workspace import Workspace
 
 _KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-_ENV_FILE = Path.home() / ".config" / "free-claude-code" / ".env"
+_ENV_FILE = Path.home() / ".config" / "companion" / ".env"
 _SECRET_FRAGMENTS = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "AUTH", "BEARER")
 
 

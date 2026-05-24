@@ -30,7 +30,7 @@ dashboard opens, no terminal seen.
 1. Choose the bundler. **Recommendation: PyOxidizer** for the embedded
    Python (single ~80 MB binary, no system Python needed). Briefcase
    works but the resulting bundle is larger.
-2. Verify the `fcc-server` entrypoint runs from a frozen binary
+2. Verify the `companion-server` entrypoint runs from a frozen binary
    (filesystem paths, resource loading, etc. — likely needs
    `importlib.resources` instead of `__file__` reads).
 3. Tauri side: tray icon + window. Window points at the localhost URL.

@@ -1,7 +1,7 @@
 """Preference management tools — PreferenceSet / PreferenceDelete / PreferenceList.
 
 Preferences are stored as a Markdown bullet list in the path configured via
-``PREFERENCES_PATH`` (default ``~/.config/free-claude-code/preferences.md``).
+``PREFERENCES_PATH`` (default ``~/.config/companion/preferences.md``).
 Each bullet has the form::
 
     - **key**: value

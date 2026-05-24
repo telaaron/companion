@@ -6,7 +6,7 @@ the project modular as providers, clients, and smoke tests grow.
 
 ## Current Product Shape
 
-`free-claude-code` is an Anthropic-compatible proxy with optional messaging
+`companion` is an Anthropic-compatible proxy with optional messaging
 workers:
 
 - `api/` owns the HTTP routes, request orchestration, model routing, auth, and

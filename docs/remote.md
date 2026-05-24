@@ -44,7 +44,7 @@ cloudflared --version
 
 ## 2. Run the quickstart script
 
-Make sure Companion is already running (`uv run fcc-server`), then:
+Make sure Companion is already running (`uv run companion-server`), then:
 
 ```bash
 ./scripts/remote-up.sh yourdomain.com
@@ -102,7 +102,7 @@ CF_ACCESS_AUD=<paste-aud-tag-here>
 CF_ACCESS_TEAM=<your-team-name>   # e.g. "myteam" from myteam.cloudflareaccess.com
 ```
 
-Restart Companion (`uv run fcc-server`). Companion will now accept both:
+Restart Companion (`uv run companion-server`). Companion will now accept both:
 
 - `Authorization: Bearer <your-token>` (existing behaviour), **and**
 - `Cf-Access-Jwt-Assertion: <jwt>` issued by Cloudflare Access (item 5.1).
@@ -178,7 +178,7 @@ Install cloudflared (see step 1 above) and ensure it is on your `$PATH`.
 
 **"Companion is not responding on port 8082"**
 
-Start the server first: `uv run fcc-server`
+Start the server first: `uv run companion-server`
 
 **Access policy not working / still getting 401**
 

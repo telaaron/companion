@@ -118,15 +118,16 @@ Use **Quit** from the tray to exit fully.
 - **Windows:** Use *Add or remove programs* → Companion → Uninstall.
 - **Linux:** Delete the AppImage file.
 
-Data files (sessions, config) are stored in:
+User data (sessions, config) is stored under the OS-standard XDG dirs:
 
-| Platform | Path |
-|----------|------|
-| macOS | `~/Library/Application Support/com.companion.app/` |
-| Windows | `%APPDATA%\com.companion.app\` |
-| Linux | `~/.config/com.companion.app/` |
+| Platform | Config (.env) | Sessions / cache (SQLite) |
+|----------|---------------|---------------------------|
+| macOS | `~/.config/companion/` | `~/.cache/companion/` |
+| Linux | `~/.config/companion/` | `~/.cache/companion/` |
+| Windows | `%USERPROFILE%\.config\companion\` | `%USERPROFILE%\.cache\companion\` |
 
-Delete those directories to fully remove all user data.
+Delete those directories to fully remove all user data. The Tauri shell itself
+holds no state outside these dirs.
 
 ---
 

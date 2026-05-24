@@ -60,6 +60,30 @@
 
 ## Gefixte Bugs
 
+### BUG-F08: Tauri-Desktop-App + GitHub-Download fehlten
+**Status**: gefixt (uncommitted, 2026-05-24)
+**Symptom**: Companion war nur als Source-Install ueber `uv run companion-server` verfuegbar. Aaron wollte normalen Programm-Download per GitHub Release (dmg/exe/AppImage).
+**Loesung**: Full v1 Tauri-Bundle umgesetzt — siehe `docs/agent-prompts/09-tauri-wrap.md`. Konkret:
+- `tauri/src-tauri/` (Tauri 2.x, Rust) — spawnt companion-bin on launch, wartet 5s auf Port 8082, tray icon mit Start/Stop/Open/Quit, hide-statt-close.
+- `packaging/companion-bin.spec` (PyInstaller; PyOxidizer war 2026 effektiv tot, kein Py3.14-Support) — Single-File-Bundle ~37 MB mit FastAPI/pydantic/uvicorn/sqlite/loguru/api/core/cli/plugins/routines/ui_static/env.example.
+- `.github/workflows/release.yml` — Matrix-Build macos-14/windows-latest/ubuntu-22.04, PyInstaller -> Tauri -> Artefakte -> softprops/action-gh-release. Triggert auf tag push `v*.*.*` und workflow_dispatch.
+- `scripts/gen_icon.py` — Pillow-Placeholder-Icon (indigo Gradient + "C"); `cargo tauri icon` generiert komplettes Set (mac icns, Win ico, Android, iOS).
+**Acceptance**: Local `cargo tauri build --debug` produziert `Companion.app` + `Companion_1.0.0_aarch64.dmg`. Push eines `v*.*.*` tags loest CI-Build aller drei OS-Bundles aus + Release-Erstellung.
+
+### BUG-F09: "free-claude-code" Branding weg, alles auf "companion"
+**Status**: gefixt (uncommitted, 2026-05-24)
+**Symptom**: Repo hieß intern noch `free-claude-code` (pyproject `name`, CLI scripts `fcc-server`/`fcc-init`/`fcc-claude`, Paths `~/.config/free-claude-code/`, `~/.cache/free-claude-code/`, User-Agent, UI-Titel, Wizard).
+**Fix**:
+- pyproject `name = "companion"`, scripts neu: `companion`, `companion-server`, `companion-init`, `companion-claude`, `ds`. Legacy-Aliase (`fcc-server`, `free-claude-code`, `fcc-init`, `fcc-claude`) **entfernt**.
+- Paths neu: `~/.config/companion/`, `~/.cache/companion/`. Datastore + `cli/entrypoints.serve()` migrieren existierende Legacy-Dirs auf erstem Run automatisch (`shutil.copy2` + `copytree`). Legacy bleibt liegen als Undo.
+- Env var: `COMPANION_ENV_FILE` (Legacy `FCC_ENV_FILE` weiterhin akzeptiert als Fallback).
+- UI / Admin / Wizard Strings: alle "Free Claude Code" -> "Companion", brand-mark "FC" -> "C".
+- System-prompt Identity: "the user runs through their local free-claude-code proxy" -> "the user's self-hosted AI workstation".
+- User-Agent: `companion/2.0`.
+- Doku, Smoke-Tests, Unit-Tests entsprechend angepasst.
+- 3 historische `# type: ignore[…]` in `api/agent/indexer.py` entfernt (CI grep-gate-clean), `tiktoken` Rueckgabe als `Any` annotiert, watchdog Observer `obs.stop/join` ohne ignores.
+**Verification**: alle 5 Gates gruen (1786 Tests), grep-gate `# type: ignore|# ty: ignore` rein 0 hits.
+
 ### BUG-F07: Modell weiss nicht in welchem Projekt es ist
 **Status**: gefixt (uncommitted, 2026-05-24)
 **Symptom**: User fragt "welches Projekt ist mit diesem Chat verknuepft?" -> Agent antwortet "kein Projekt verknuepft", auch wenn `session.project_id` korrekt gesetzt ist und Sidebar das Projekt anzeigt.
@@ -67,7 +91,7 @@
 **Fix**: Bei gesetztem `project_id` immer einen "Project header"-Block voranstellen mit `Project name`, `Project ID`, `Workspace path`, optional `Project description`. Funktioniert auch ohne `shared_context`. Pinned-Memories und Brief werden weiterhin angefuegt.
 **Files**: `api/agent/jobs.py`, `tests/api/test_pinned_memories.py` (Assertions auf neuen Header, mock-router auf Echo-Pattern angeglichen damit pre-routing injection in `run_agent_streaming` ankommt).
 **Verification**: `uv run ruff format --check && uv run ruff check && uv run ty check && uv run pytest -q` -> 1786 passed.
-**Folgeaktion fuer Aaron**: Companion-Projekt im UI hat laut Chat `workspace_path = ~/free-claude-code` (stale). Sollte auf `~/Dateien - Local/companion` umgesetzt werden, sonst loesen File-Tools relative Pfade falsch auf (siehe auch BUG-002).
+**Folgeaktion fuer Aaron**: Companion-Projekt im UI hat laut Chat `workspace_path = ~/companion` (stale). Sollte auf `~/Dateien - Local/companion` umgesetzt werden, sonst loesen File-Tools relative Pfade falsch auf (siehe auch BUG-002).
 
 ### BUG-F06: 2. paralleler Chat friert UI ein, Server antwortet nicht mehr
 **Status**: gefixt (uncommitted, 2026-05-24)

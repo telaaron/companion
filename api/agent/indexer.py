@@ -42,7 +42,13 @@ _DEBOUNCE_S = 0.25  # 250 ms debounce window
 # ---------------------------------------------------------------------------
 
 
-def _get_encoder():  # type: ignore[return]
+def _get_encoder() -> Any:
+    """Return a tiktoken Encoding instance.
+
+    Annotated as :class:`typing.Any` because ``tiktoken`` ships no type stubs
+    and we don't want to pull in a third-party stub package just for one
+    return value. Callers only need ``.encode`` which is duck-typed.
+    """
     import tiktoken
 
     return tiktoken.get_encoding("cl100k_base")
@@ -349,8 +355,8 @@ class Indexer:
             obs = self._observer
             self._observer = None
             try:
-                obs.stop()  # type: ignore[attr-defined]
-                obs.join(timeout=3)  # type: ignore[attr-defined]
+                obs.stop()
+                obs.join(timeout=3)
             except Exception as exc:
                 logger.warning("INDEXER: observer stop error: {}", exc)
         logger.info("INDEXER: stopped")

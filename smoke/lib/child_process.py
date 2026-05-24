@@ -1,7 +1,7 @@
 """Child-process commands for smoke (avoid nested ``uv run`` on Windows).
 
 Nested ``uv run`` can try to refresh console scripts while they are locked
-(``free-claude-code.exe`` in use), causing flaky smoke. The smoke runner is
+(``companion-server.exe`` in use), causing flaky smoke. The smoke runner is
 already executed under the project environment (``uv run pytest``), so children
 should use the same interpreter.
 """
@@ -36,9 +36,16 @@ def cmd_uvicorn_server_app(
     ]
 
 
-def cmd_fcc_init() -> list[str]:
+def cmd_companion_init() -> list[str]:
     return [python_exe(), "-c", "from cli.entrypoints import init; init()"]
 
 
-def cmd_free_claude_code_serve() -> list[str]:
+# Back-compat aliases — kept until every smoke/test caller is converted.
+cmd_fcc_init = cmd_companion_init
+
+
+def cmd_companion_serve() -> list[str]:
     return [python_exe(), "-c", "from cli.entrypoints import serve; serve()"]
+
+
+cmd_free_claude_code_serve = cmd_companion_serve

@@ -1,4 +1,4 @@
-"""Tests for cli/entrypoints.py — fcc-init scaffolding logic."""
+"""Tests for cli/entrypoints.py — companion-init scaffolding logic."""
 
 import tomllib
 from pathlib import Path
@@ -28,7 +28,7 @@ def _run_init(tmp_home: Path) -> tuple[str, Path]:
     """Run init() with home directory redirected to tmp_home. Returns (printed output, env_file path)."""
     from cli.entrypoints import init
 
-    env_file = tmp_home / ".config" / "free-claude-code" / ".env"
+    env_file = tmp_home / ".config" / "companion" / ".env"
     printed: list[str] = []
 
     with (
@@ -74,8 +74,8 @@ def test_env_template_loader_uses_root_template_in_source_checkout() -> None:
 
 
 def test_init_creates_parent_directories(tmp_path: Path) -> None:
-    """init() creates ~/.config/free-claude-code/ even if it doesn't exist."""
-    config_dir = tmp_path / ".config" / "free-claude-code"
+    """init() creates ~/.config/companion/ even if it doesn't exist."""
+    config_dir = tmp_path / ".config" / "companion"
     assert not config_dir.exists()
 
     _run_init(tmp_path)
@@ -88,7 +88,7 @@ def test_init_skips_if_env_already_exists(tmp_path: Path) -> None:
     # Create it first
     _run_init(tmp_path)
 
-    env_file = tmp_path / ".config" / "free-claude-code" / ".env"
+    env_file = tmp_path / ".config" / "companion" / ".env"
     env_file.write_text("existing content", encoding="utf-8")
 
     output, _ = _run_init(tmp_path)
@@ -98,10 +98,10 @@ def test_init_skips_if_env_already_exists(tmp_path: Path) -> None:
 
 
 def test_init_prints_next_step_hint(tmp_path: Path) -> None:
-    """init() tells the user to run fcc-server after editing .env."""
+    """init() tells the user to run companion-server after editing .env."""
     output, _ = _run_init(tmp_path)
 
-    assert "fcc-server" in output
+    assert "companion-server" in output
 
 
 def test_cli_scripts_are_registered() -> None:
@@ -112,9 +112,13 @@ def test_cli_scripts_are_registered() -> None:
     )
 
     scripts = pyproject["project"]["scripts"]
-    assert scripts["fcc-server"] == "cli.entrypoints:serve"
-    assert scripts["free-claude-code"] == "cli.entrypoints:serve"
-    assert scripts["fcc-claude"] == "cli.entrypoints:launch_claude"
+    assert scripts["companion-server"] == "cli.entrypoints:serve"
+    assert scripts["companion"] == "cli.entrypoints:companion"
+    assert scripts["companion-claude"] == "cli.entrypoints:launch_claude"
+    # Legacy aliases removed in the rename — must NOT linger.
+    assert "fcc-server" not in scripts
+    assert "free-claude-code" not in scripts
+    assert "fcc-claude" not in scripts
 
 
 def test_serve_supervisor_restarts_when_app_requests_restart() -> None:
@@ -310,4 +314,4 @@ def test_launch_claude_unreachable_proxy_exits_with_hint(
     run.assert_not_called()
     captured = capsys.readouterr()
     assert "http://127.0.0.1:9393" in captured.err
-    assert "fcc-server" in captured.err
+    assert "companion-server" in captured.err

@@ -17,7 +17,7 @@ Selbst-gehostetes KI-Workstation-Backend + Dashboard.
 - SQLite-DB mit FTS5-Volltext-Suche
 - Hintergrund-Agent-Loop (Jobs) mit SSE-Streaming
 - MCP-Passthrough (Obsidian, Firecrawl, Email, ...)
-- Branch: `feat/agentic-os-phase-b` auf `telaaron/companion` + `telaaron/free-claude-code`
+- Branch: `feat/agentic-os-phase-b` auf `telaaron/companion` + `telaaron/companion`
 
 ---
 
@@ -55,7 +55,7 @@ api/
 
 config/settings.py       pydantic-settings, alle Env-Vars
 core/model_router.py     Splittet "provider/model" Gateway-IDs
-cli/entrypoints.py       Console-Scripts: fcc-server, companion plugins, discord-bot
+cli/entrypoints.py       Console-Scripts: companion-server, companion plugins, discord-bot
 plugins/                 YAML Plugin-Specs (obsidian, journal, mcp-server, ...)
 routines/                Starter-Routine-YAML-Templates
 tests/                   pytest Suite (~1786 Tests, parallel via xdist)
@@ -71,7 +71,7 @@ tauri/                   Desktop-App Scaffold (Rust/Tauri 2.x)
 
 ```bash
 # Server starten (http://127.0.0.1:8082/ui/)
-uv run fcc-server
+uv run companion-server
 
 # Checks (IN DIESER REIHENFOLGE)
 uv run ruff format             # Formatierung auto-fix

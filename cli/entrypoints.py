@@ -316,7 +316,8 @@ def _load_env_template() -> str:
 
 
 def serve() -> None:
-    """Start the FastAPI server (registered as `fcc-server` script)."""
+    """Start the FastAPI server (registered as the ``companion-server`` script)."""
+    _migrate_legacy_user_dirs()
     try:
         try:
             while True:
@@ -359,8 +360,9 @@ def _run_supervised_server(settings: Settings) -> bool:
 
 
 def init() -> None:
-    """Scaffold config at ~/.config/free-claude-code/.env (registered as `fcc-init`)."""
-    config_dir = Path.home() / ".config" / "free-claude-code"
+    """Scaffold config at ~/.config/companion/.env (registered as `companion-init`)."""
+    _migrate_legacy_user_dirs()
+    config_dir = Path.home() / ".config" / "companion"
     env_file = config_dir / ".env"
 
     if env_file.exists():
@@ -372,7 +374,39 @@ def init() -> None:
     template = _load_env_template()
     env_file.write_text(template, encoding="utf-8")
     print(f"Config created at {env_file}")
-    print("Edit it to set your API keys and model preferences, then run: fcc-server")
+    print(
+        "Edit it to set your API keys and model preferences, then run: companion-server"
+    )
+
+
+def _migrate_legacy_user_dirs() -> None:
+    """One-shot migration of pre-rename user dirs to the new ``companion`` ones.
+
+    Pre-rename Companion was distributed as ``free-claude-code`` and stored
+    its config + cache under ``~/.config/free-claude-code`` and
+    ``~/.cache/free-claude-code``. After the rename, this helper copies any
+    legacy files into the new locations on first run and leaves the legacy
+    dirs in place as a manual undo.
+    """
+    home = Path.home()
+    pairs = (
+        (home / ".config" / "free-claude-code", home / ".config" / "companion"),
+        (home / ".cache" / "free-claude-code", home / ".cache" / "companion"),
+    )
+    for old, new in pairs:
+        if not old.is_dir() or new.exists():
+            continue
+        new.mkdir(parents=True, exist_ok=True)
+        for src in old.iterdir():
+            dst = new / src.name
+            try:
+                if src.is_dir():
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, dst)
+            except OSError:
+                # Best-effort migration; never block startup on copy failure.
+                continue
 
 
 def _claude_child_env(
@@ -413,16 +447,19 @@ def _preflight_proxy(proxy_root_url: str) -> str | None:
 
 
 def launch_claude(argv: Sequence[str] | None = None) -> None:
-    """Launch Claude Code with Free Claude Code proxy environment variables."""
+    """Launch Claude Code wired through the local Companion proxy."""
 
     settings = get_settings()
     proxy_root_url = local_proxy_root_url(settings)
     if error := _preflight_proxy(proxy_root_url):
         print(
-            f"Free Claude Code proxy is not reachable at {proxy_root_url}: {error}",
+            f"Companion proxy is not reachable at {proxy_root_url}: {error}",
             file=sys.stderr,
         )
-        print("Start it in another terminal with: fcc-server", file=sys.stderr)
+        print(
+            "Start it in another terminal with: companion-server",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
     args = list(sys.argv[1:] if argv is None else argv)

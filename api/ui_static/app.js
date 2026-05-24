@@ -1,4 +1,4 @@
-// free-claude-code dashboard — vanilla JS SPA.
+// companion dashboard — vanilla JS SPA.
 //
 // Single-file app split into:
 //   - tiny route table + html() helper
@@ -65,6 +65,20 @@
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+  function _relativeTime(tsMs) {
+    if (!tsMs) return "never";
+    const diff = Date.now() - new Date(tsMs).getTime();
+    if (diff < 0) return "now";
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return sec <= 1 ? "1 second ago" : sec + " seconds ago";
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min === 1 ? "1 minute ago" : min + " minutes ago";
+    const hrs = Math.floor(min / 60);
+    if (hrs < 24) return hrs === 1 ? "1 hour ago" : hrs + " hours ago";
+    const days = Math.floor(hrs / 24);
+    if (days === 1) return "1 day ago";
+    return days + " days ago";
   }
   function fmtBytes(n) {
     if (n == null) return "";
@@ -193,26 +207,38 @@
     s = s.replace(/§§TOOL§§(.+?)§§\/TOOL§§/gs, (_m, payload) => {
       try {
         const o = JSON.parse(decodeURIComponent(payload));
-        const isFileOp = /^(Read|Write|Edit)$/i.test(o.name || "");
-        // Extract the first argument as path for file operations.
+        const toolName = o.name || "";
+        const toolLower = toolName.toLowerCase();
         const rawArgs = (o.args || "").trim();
+
+        const isFileOp = /^(Read|Write|Edit)$/i.test(toolName);
         const filePath = isFileOp ? rawArgs.split(",")[0].trim().replace(/^["']|["']$/g, "") : "";
         const dataPath = filePath ? ` data-filepath="${escapeHtml(filePath)}"` : "";
         const dataKind = isFileOp
-          ? ` data-filekind="${escapeHtml(/^Write$/i.test(o.name) ? "write" : "read")}"`
+          ? ` data-filekind="${escapeHtml(/^Write$/i.test(toolName) ? "write" : "read")}"`
           : "";
         const clickable = isFileOp && filePath ? ` tool-block-clickable` : "";
-        const clickInline = isFileOp && filePath
-          ? ` style="cursor:pointer" title="Click to preview in panel"`
+
+        // Meta summary — lines / size in brief
+        const bodyText = o.body || "";
+        const bodyLines = bodyText ? bodyText.split("\n").length : 0;
+        const meta = bodyText
+          ? `<span class="tool-meta">${bodyLines} line${bodyLines !== 1 ? "s" : ""}</span>`
           : "";
+
+        // Inline header — fits on a single line
         const header =
           `<span class="tool-glyph">${escapeHtml(o.icon || "●")}</span>` +
-          `<span class="tool-name">${escapeHtml(o.name || "")}</span>` +
-          `<span class="tool-args">(${escapeHtml(o.args || "")})</span>`;
-        const body = o.body
-          ? `<details class="tool-body"><summary>show output</summary><pre>${escapeHtml(o.body)}</pre></details>`
-          : "";
-        return `<div class="tool-block${clickable}"${dataPath}${dataKind}${clickInline}>${header}${body}</div>`;
+          `<span class="tool-name">${escapeHtml(toolName)}</span>` +
+          `<span class="tool-args">${escapeHtml(rawArgs)}</span>` +
+          meta;
+
+        // Body: wrap in <details> so output is collapsed by default.
+        const inner = bodyText
+          ? `<details class="tool-block-toggle"><summary class="tool-block-head">${header}</summary><pre class="tool-block-body">${escapeHtml(bodyText)}</pre></details>`
+          : `<div class="tool-block-head tool-block-head-static">${header}</div>`;
+
+        return `<div class="tool-block${clickable}" data-tool="${escapeHtml(toolLower)}"${dataPath}${dataKind}>${inner}</div>`;
       } catch {
         return "";
       }
@@ -226,6 +252,33 @@
       return `<pre><code${cls}>${escapeHtml(b)}</code></pre>`;
     });
     return s;
+  }
+
+  // ============================================================ Credential masking
+  function maskCredentials(text) {
+    if (!text) return text;
+    return text
+      // Mask Bearer/Basic tokens: "Bearer abc123..." -> "Bearer ****abc"
+      .replace(/\b(Bearer|bearer|Basic|basic)\s+([A-Za-z0-9\-_+/=]{8,})/g,
+        (_m, scheme, token) => {
+          const vis = Math.min(4, Math.floor(token.length / 4));
+          return scheme + " " + token.slice(0, vis) + "****" + token.slice(-vis);
+        })
+      // Mask --flag VALUE patterns (e.g. --api-key sk-abc -> --api-key sk-****)
+      .replace(/(--(?:api[_-]?key|token|auth|secret|password|bearer|access[_-]?token|key|authorization))\s+(\S+)/gi,
+        (_m, flag, value) => {
+          const vis = Math.min(4, Math.floor(value.length / 4));
+          return flag + " " + value.slice(0, vis) + "****" + value.slice(-vis);
+        })
+      // Mask --flag=VALUE patterns
+      .replace(/(--(?:api[_-]?key|token|auth|secret|password|bearer|access[_-]?token|key|authorization))=(\S+)/gi,
+        (_m, flag, value) => {
+          const vis = Math.min(4, Math.floor(value.length / 4));
+          return flag + "=" + value.slice(0, vis) + "****" + value.slice(-vis);
+        })
+      // Mask bare hex strings that look like API keys (>= 32 hex chars)
+      .replace(/\b([A-Fa-f0-9]{32,})\b/g,
+        (_m, hex) => hex.slice(0, 4) + "****" + hex.slice(-4));
   }
 
   // ============================================================ Router
@@ -1231,19 +1284,52 @@
       const pop = el("div", { class: "regen-popover" });
       pop.appendChild(el("div", { class: "regen-popover-header" }, "Regenerate with…"));
 
+      // Search filter (UX-010)
+      const filterInput = el("input", {
+        class: "regen-popover-filter",
+        type: "text",
+        placeholder: "Filter models…",
+      });
+
       const list = el("div", { class: "regen-popover-list" });
-      for (const m of ctx.modelOptions) {
-        const item = el("button", { class: "regen-popover-item", type: "button" }, m);
-        if (m === ctx.defaultModel) item.classList.add("current");
-        item.addEventListener("click", async (ev) => {
-          ev.stopPropagation();
-          pop.remove();
-          await regenInChat(messageNode, m, ctx);
-        });
-        list.appendChild(item);
+
+      function renderList(filter) {
+        list.innerHTML = "";
+        const q = (filter || "").toLowerCase().trim();
+        let visible = 0;
+        for (const m of ctx.modelOptions) {
+          if (q && !m.toLowerCase().includes(q)) continue;
+          visible++;
+          const item = el("button", {
+            class: "regen-popover-item",
+            type: "button",
+            title: m, // tooltip for long names (UX-009)
+          }, m);
+          if (m === ctx.defaultModel) item.classList.add("current");
+          item.addEventListener("click", async (ev) => {
+            ev.stopPropagation();
+            pop.remove();
+            await regenInChat(messageNode, m, ctx);
+          });
+          list.appendChild(item);
+        }
+        if (!visible) {
+          list.appendChild(el("div", { class: "regen-popover-empty" }, "No models match"));
+        }
       }
+
+      // Filter on input (debounced)
+      let filterTimer;
+      filterInput.addEventListener("input", () => {
+        clearTimeout(filterTimer);
+        filterTimer = setTimeout(() => renderList(filterInput.value), 60);
+      });
+
+      pop.appendChild(filterInput);
       pop.appendChild(list);
+      renderList("");
       messageNode.appendChild(pop);
+      setTimeout(() => filterInput.focus(), 60);
 
       const dismiss = (ev) => {
         if (!pop.contains(ev.target) && ev.target !== btn) {
@@ -2524,7 +2610,7 @@
     view.appendChild(
       pageHeader({
         title: "Env vault",
-        sub: "your global ~/.config/free-claude-code/.env",
+        sub: "your global ~/.config/companion/.env",
         actions: [
           el(
             "button",
@@ -2614,7 +2700,7 @@
           "div",
           { class: "field-help", style: { marginTop: "12px" } },
           "Restart the proxy after edits to apply changes (",
-          el("code", {}, "pkill -f free-claude-code && uv run fcc-server"),
+          el("code", {}, "pkill -f companion-server && uv run companion-server"),
           ")."
         )
       )
@@ -2864,7 +2950,7 @@
               "div",
               { class: "mcp-card-meta" },
               el("strong", {}, srv.name),
-              el("div", { class: "muted fs-12" }, srv.command + " " + (srv.args || []).join(" "))
+              el("div", { class: "muted fs-12" }, maskCredentials(srv.command + " " + (srv.args || []).join(" ")))
             ),
             el(
               "span",
@@ -4206,6 +4292,7 @@
 
     const lang = data.language || "plaintext";
     pathLabel.textContent = path;
+    pathLabel.title = path;
     langBadge.textContent = lang;
     langBadge.style.display = lang === "plaintext" ? "none" : "";
 
@@ -4266,13 +4353,13 @@
 
     const RANGES = ["1h", "24h", "7d", "30d", "all"];
     const fmtUsd = (n) =>
-      new Intl.NumberFormat(undefined, {
+      new Intl.NumberFormat("en-US", {
         style: "currency",
         currency: "USD",
         maximumFractionDigits: 4,
       }).format(n);
     const fmtInt = (n) =>
-      new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(n);
+      new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n);
 
     view.appendChild(
       pageHeader({
@@ -4482,8 +4569,12 @@
       rescanBtn.disabled = rescanInFlight;
       rescanBtn.textContent = rescanInFlight ? "Scanning…" : "Rescan now";
 
-      const lastScan = s.last_scan_ms
-        ? new Date(s.last_scan_ms).toLocaleString()
+      const lastScan = s.last_scan_ms ? _relativeTime(s.last_scan_ms) : "never";
+      const lastScanAbs = s.last_scan_ms
+        ? new Date(s.last_scan_ms).toLocaleString(undefined, {
+            dateStyle: "medium",
+            timeStyle: "medium",
+          })
         : "never";
       statusEl.innerHTML = "";
       statusEl.appendChild(
@@ -4493,35 +4584,46 @@
           el(
             "div",
             { class: "stat-card" },
-            el("div", { class: "stat-value" }, String(s.file_count ?? 0)),
-            el("div", { class: "stat-label" }, "files indexed")
+            el("i", { "data-lucide": "file-text" }),
+            el("div", { class: "stat-body" },
+              el("div", { class: "stat-value" }, String(s.file_count ?? 0)),
+              el("div", { class: "stat-label" }, "files indexed")
+            )
           ),
           el(
             "div",
             { class: "stat-card" },
-            el("div", { class: "stat-value" }, String(s.total_chunks ?? 0)),
-            el("div", { class: "stat-label" }, "total chunks")
+            el("i", { "data-lucide": "grid-3x3" }),
+            el("div", { class: "stat-body" },
+              el("div", { class: "stat-value" }, String(s.total_chunks ?? 0)),
+              el("div", { class: "stat-label" }, "total chunks")
+            )
           ),
           el(
             "div",
             { class: "stat-card" },
-            el(
-              "div",
-              { class: "stat-value" },
-              s.index_bytes
-                ? (s.index_bytes / 1024 / 1024).toFixed(1) + " MB"
-                : "0 MB"
-            ),
-            el("div", { class: "stat-label" }, "indexed bytes")
+            el("i", { "data-lucide": "database" }),
+            el("div", { class: "stat-body" },
+              el("div", { class: "stat-value" },
+                s.index_bytes
+                  ? (s.index_bytes / 1024 / 1024).toFixed(1) + " MB"
+                  : "0 MB"
+              ),
+              el("div", { class: "stat-label" }, "indexed bytes")
+            )
           ),
           el(
             "div",
-            { class: "stat-card" },
-            el("div", { class: "stat-value" }, lastScan),
-            el("div", { class: "stat-label" }, "last scan")
+            { class: "stat-card", },
+            el("i", { "data-lucide": "clock" }),
+            el("div", { class: "stat-body" },
+              el("div", { class: "stat-value", title: lastScanAbs }, lastScan),
+              el("div", { class: "stat-label" }, "last scan")
+            )
           )
         )
       );
+      lucide.createIcons();
     }
 
     async function refresh() {
@@ -4703,12 +4805,11 @@
             onclick: async (e) => {
               e.stopPropagation();
               runBtn.disabled = true;
-              runBtn.textContent = "Running…";
+              runBtn.textContent = "Run now";
               try {
                 const res = await api(`/v1/routines/${r.id}/run`, { method: "POST" });
                 toastShow("Routine fired — job " + (res.job?.id || ""), "ok");
                 await loadRoutines();
-                // Show the history + job output for this routine
                 if (res.job?.id) {
                   if (historyRoutineId !== r.id) {
                     historyRoutineId = r.id;
@@ -4721,42 +4822,37 @@
               } catch (err) {
                 toastShow(`Run failed: ${err.message}`, "error");
                 runBtn.disabled = false;
-                runBtn.textContent = "Run now";
               }
             },
           },
-          "Run now"
+          el("i", { "data-lucide": "play" })
         );
 
-        const histBtn = el(
-          "button",
-          {
-            class: "btn btn-sm ghost",
-            title: "History",
-            onclick: (e) => {
-              e.stopPropagation();
-              toggleHistory(r.id);
-            },
+        // Kebab menu — compact actions dropdown
+        const kebabBtn = el("button", {
+          class: "icon-btn",
+          title: "More actions",
+          onclick: (e) => {
+            e.stopPropagation();
+            kebabMenu.style.display = kebabMenu.style.display === "none" ? "" : "none";
           },
-          "History"
-        );
+        }, el("i", { "data-lucide": "ellipsis-vertical" }));
 
-        const editBtn = el(
-          "button",
-          {
-            class: "btn btn-sm ghost",
-            onclick: (e) => {
-              e.stopPropagation();
-              openEditDrawer(r);
-            },
-          },
-          "Edit"
-        );
-
-        const delBtn = el(
-          "button",
-          {
-            class: "btn btn-sm ghost danger",
+        const kebabMenu = el("div", {
+          class: "kebab-menu",
+          style: "display:none",
+          onclick: (e) => e.stopPropagation(),
+        },
+          el("button", {
+            class: "kebab-item",
+            onclick: (e) => { e.stopPropagation(); toggleHistory(r.id); kebabMenu.style.display = "none"; },
+          }, "History"),
+          el("button", {
+            class: "kebab-item",
+            onclick: (e) => { e.stopPropagation(); openEditDrawer(r); kebabMenu.style.display = "none"; },
+          }, "Edit"),
+          el("button", {
+            class: "kebab-item kebab-item-danger",
             onclick: async (e) => {
               e.stopPropagation();
               if (!confirm(`Delete routine "${r.name}"?`)) return;
@@ -4764,14 +4860,29 @@
                 await api(`/v1/routines/${r.id}`, { method: "DELETE" });
                 toastShow("Routine deleted", "ok");
                 if (historyRoutineId === r.id) closeHistory();
+                kebabMenu.style.display = "none";
                 await loadRoutines();
               } catch (err) {
                 toastShow(`Delete failed: ${err.message}`, "error");
               }
             },
-          },
-          "Delete"
+          }, "Delete"),
         );
+
+        // Close kebab when clicking outside
+        document.addEventListener("click", function _closeKebab(e) {
+          if (!kebabMenu.parentNode) {
+            document.removeEventListener("click", _closeKebab);
+            return;
+          }
+          if (!kebabMenu.contains(e.target) && e.target !== kebabBtn) {
+            kebabMenu.style.display = "none";
+          }
+        });
+
+        const actionsCell = el("td", {},
+          el("div", { class: "row gap-1", style: "position:relative" },
+            runBtn, kebabBtn, kebabMenu));
 
         const row = el(
           "tr",
@@ -4782,10 +4893,10 @@
           el("td", {}, enabledBadge),
           el(
             "td",
-            { class: "muted" },
+            { class: "muted", style: "min-width:90px" },
             r.last_run_ms ? fmtTime(r.last_run_ms) : "never"
           ),
-          el("td", {}, el("div", { class: "row gap-1" }, runBtn, histBtn, editBtn, delBtn))
+          actionsCell
         );
         tbody.appendChild(row);
       });

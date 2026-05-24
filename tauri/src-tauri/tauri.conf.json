@@ -41,7 +41,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../packaging/dist/companion-bin": "companion-bin"
+      "../../packaging/dist/companion-bin": "companion-bin"
     },
     "macOS": {
       "minimumSystemVersion": "12.0",

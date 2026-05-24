@@ -11,7 +11,7 @@ tailnet — no public URL, no Cloudflare account required.
 ## Files
 
 - `deploy/docker/Dockerfile` — Python 3.14-slim + `uv` + copy repo +
-  entrypoint `uv run fcc-server --bind 0.0.0.0`.
+  entrypoint `uv run companion-server --bind 0.0.0.0`.
 - `deploy/docker/docker-compose.yml`:
   ```yaml
   services:

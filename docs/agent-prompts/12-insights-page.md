@@ -25,7 +25,7 @@ breakdown, and actionable suggestion cards.
   providers, suggestions). Each suggestion card has an optional
   one-click "Apply" that PUTs the env change via `/v1/settings`.
 - `cli/insight_cron.py` (optional v2) — nightly run writes a snapshot
-  to `~/.cache/free-claude-code/insights/YYYY-MM-DD.json`.
+  to `~/.cache/companion/insights/YYYY-MM-DD.json`.
 - `tests/agent/test_insights.py` (new) — seed audit_log + usage_events,
   assert the computed shape.
 

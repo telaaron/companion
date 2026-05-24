@@ -4,13 +4,14 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch: {}
 
 permissions:
   contents: write
 
 jobs:
   build-python-binary:
-    name: Python binary — ${{ matrix.os }}
+    name: PyInstaller — ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -29,35 +30,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.14
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
+          enable-cache: true
 
-      - name: Install PyOxidizer
-        run: pip install pyoxidizer
+      - name: Install Python 3.14
+        run: uv python install 3.14
+
+      - name: Sync project deps
+        run: uv sync --all-extras --dev
 
       - name: Build Python binary
-        working-directory: packaging
-        run: pyoxidizer build --release
+        run: |
+          uv run pyinstaller packaging/companion-bin.spec \
+            --distpath packaging/dist \
+            --workpath packaging/build \
+            --noconfirm
+        shell: bash
 
-      - name: Locate binary (Unix)
+      - name: Smoke-test binary (Unix)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p packaging/dist
-          cp packaging/build/*/release/install/companion-bin packaging/dist/companion-bin
-
-      - name: Locate binary (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force packaging/dist
-          Copy-Item (Get-ChildItem -Recurse packaging/build -Filter companion-bin.exe | Select-Object -First 1).FullName packaging/dist/companion-bin.exe
+          chmod +x packaging/dist/companion-bin
+          ./packaging/dist/companion-bin --help 2>&1 | head -3 || true
+          file packaging/dist/companion-bin
 
       - name: Upload Python binary artifact
         uses: actions/upload-artifact@v4
@@ -125,7 +123,7 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build Tauri app
-        working-directory: tauri
+        working-directory: tauri/src-tauri
         run: cargo tauri build --target ${{ matrix.target }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
@@ -164,9 +162,9 @@ jobs:
           body: |
             ## Companion ${{ github.ref_name }}
 
-            ### Installation
+            Self-hosted AI workstation — FastAPI proxy, dashboard, background agent loop.
 
-            See [docs/installing.md](https://github.com/telaaron/companion/blob/main/docs/installing.md) for full instructions.
+            ### Installation
 
             | Platform | Download |
             |----------|---------|
@@ -174,4 +172,4 @@ jobs:
             | Windows (x86-64) | `Companion-*-x86_64-pc-windows-msvc.exe` |
             | Linux (x86-64) | `Companion-*-x86_64-unknown-linux-gnu.AppImage` |
 
-            > **macOS note:** The app is not codesigned in this release. You may need to right-click → Open on first launch to bypass Gatekeeper. See [docs/installing.md](https://github.com/telaaron/companion/blob/main/docs/installing.md) for details.
+            > **macOS note:** The app is not codesigned in this release. On first launch macOS will refuse to open it; right-click the app and pick **Open**, then confirm. See [docs/installing.md](https://github.com/telaaron/companion/blob/main/docs/installing.md) for details.

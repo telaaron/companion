@@ -290,8 +290,12 @@ def test_system_prompt_contains_pinned_memory(fresh_db) -> None:
 
     assert captured_system, "run_agent_streaming was never called"
     sys_text = captured_system[0] or ""
-    assert "Memory you must respect for this project:" in sys_text
+    assert "Pinned memories you must respect for this project:" in sys_text
     assert "staging key is in 1Password" in sys_text
+    # The project header must always be injected when project_id is set, so
+    # the model can answer meta-questions like "which project am I in?".
+    assert "Project name: Injection test" in sys_text
+    assert f"Project ID: {pid}" in sys_text
 
 
 def test_system_prompt_no_memory_no_header(fresh_db) -> None:
@@ -332,20 +336,18 @@ def test_system_prompt_no_memory_no_header(fresh_db) -> None:
         patch("api.model_router.ModelRouter") as mock_router_cls,
         patch("api.agent.jobs._maybe_notify", new_callable=AsyncMock),
     ):
+        # Echo the request the router receives so the system prompt injected
+        # by _run_job before routing survives into run_agent_streaming.
+        def _echo_route(request):
+            result = MagicMock()
+            result.resolved.provider_id = "test"
+            result.resolved.provider_model = "model"
+            result.request = request
+            return result
+
         mock_router = MagicMock()
         mock_router_cls.return_value = mock_router
-        routed = MagicMock()
-        routed.resolved.provider_id = "test"
-        routed.resolved.provider_model = "model"
-        from api.models.anthropic import MessagesRequest
-
-        routed.request = MessagesRequest(
-            model="test/model",
-            max_tokens=16,
-            messages=[],
-            system=None,
-        )
-        mock_router.resolve_messages_request.return_value = routed
+        mock_router.resolve_messages_request.side_effect = _echo_route
 
         from config.settings import get_settings
 
@@ -361,4 +363,6 @@ def test_system_prompt_no_memory_no_header(fresh_db) -> None:
 
     assert captured_system, "run_agent_streaming was never called"
     sys_text = captured_system[0] or ""
-    assert "Memory you must respect" not in sys_text
+    assert "Pinned memories you must respect" not in sys_text
+    # Project header is still always injected (project_id is set, just no memories).
+    assert "Project name: Empty memories" in sys_text

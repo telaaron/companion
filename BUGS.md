@@ -60,6 +60,24 @@
 
 ## Gefixte Bugs
 
+### BUG-F07: Modell weiss nicht in welchem Projekt es ist
+**Status**: gefixt (uncommitted, 2026-05-24)
+**Symptom**: User fragt "welches Projekt ist mit diesem Chat verknuepft?" -> Agent antwortet "kein Projekt verknuepft", auch wenn `session.project_id` korrekt gesetzt ist und Sidebar das Projekt anzeigt.
+**Root cause**: `api/agent/jobs.py::_run_job` hat NUR den user-supplied `shared_context` und Pinned-Memories in den System-Prompt injiziert. Wenn `shared_context` leer war (Default fuer neue Projekte), bekam das Modell null Signal dass ueberhaupt ein Projekt verknuepft ist — kein Name, keine ID, kein Workspace.
+**Fix**: Bei gesetztem `project_id` immer einen "Project header"-Block voranstellen mit `Project name`, `Project ID`, `Workspace path`, optional `Project description`. Funktioniert auch ohne `shared_context`. Pinned-Memories und Brief werden weiterhin angefuegt.
+**Files**: `api/agent/jobs.py`, `tests/api/test_pinned_memories.py` (Assertions auf neuen Header, mock-router auf Echo-Pattern angeglichen damit pre-routing injection in `run_agent_streaming` ankommt).
+**Verification**: `uv run ruff format --check && uv run ruff check && uv run ty check && uv run pytest -q` -> 1786 passed.
+**Folgeaktion fuer Aaron**: Companion-Projekt im UI hat laut Chat `workspace_path = ~/free-claude-code` (stale). Sollte auf `~/Dateien - Local/companion` umgesetzt werden, sonst loesen File-Tools relative Pfade falsch auf (siehe auch BUG-002).
+
+### BUG-F06: 2. paralleler Chat friert UI ein, Server antwortet nicht mehr
+**Status**: gefixt (uncommitted, 2026-05-24)
+**Symptom**: 1 Chat laufend = OK. 2. Session im selben Tab starten waehrend 1. noch streamt -> UI friert komplett ein, Reload laedt endlos, Server-Terminal komplett still, keine Exception.
+**Root cause**: `api/agent/jobs.py::_run_job` und `event_stream` riefen `datastore.*` (sync `sqlite3`) DIREKT im asyncio-Event-Loop auf. SQLite hat WAL aber Writes serialisieren; `timeout=10s` busy-wartet im C-Frame -> blockiert Loop -> keine andere Coroutine laeuft (auch nicht der Static-File-Handler fuer Reload). Zwei parallele Jobs schreiben hunderte SSE-Chunks/sec -> Schreib-Lock-Sturm -> Wedge.
+**Fix**: Alle hot-path `datastore.*` Calls in `_run_job` + `event_stream` + `_record_job_usage` + `_maybe_notify` ueber `asyncio.to_thread(...)` in den Thread-Pool. Reihenfolge im Job-Lifecycle korrigiert: `mark_agent_job_status(terminal)` jetzt LETZTER persistierter Step, damit Status-Polling die "alles persisted"-Invariante bekommt.
+**Files**: `api/agent/jobs.py`, `tests/api/test_agent_jobs_usage.py` (drei sync Calls auf `_record_job_usage` jetzt `async` + `@pytest.mark.asyncio`).
+**Verification**: `uv run ruff format --check && uv run ruff check && uv run ty check && uv run pytest -q` -> 1786 passed.
+**Residual risk**: Bei sehr vielen parallelen Jobs (10+) bleibt SQLite-Write-Contention messbar (Job-Throughput sinkt), aber UI bleibt responsive. Falls Problem: `append_agent_job_event` SELECT+INSERT auf ein einzelnes INSERT mit Subquery zusammenfassen (halbiert Roundtrips) — separater Folge-Patch.
+
 ### BUG-F01: Regenerate haengt alte Antwort an statt zu ersetzen
 **Status**: gefixt in `bb6da0d`
 **Fix**: `regenInChat()` loescht alte Antwort aus DB (DELETE /v1/sessions/{id}/messages/{mid}) + DOM, startet neuen Job mit bestehender History

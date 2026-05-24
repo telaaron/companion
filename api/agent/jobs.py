@@ -82,10 +82,20 @@ def start_job(
 
 
 async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
-    """Job lifecycle. Persists every SSE chunk + a terminal marker."""
-    datastore.mark_agent_job_status(job_id, "running")
-    datastore.append_agent_job_event(
-        job_id, event_type="job_started", data=json.dumps({"ts": int(time.time())})
+    """Job lifecycle. Persists every SSE chunk + a terminal marker.
+
+    All ``datastore.*`` calls are dispatched via :func:`asyncio.to_thread` so
+    sync ``sqlite3`` execution does not block the asyncio event loop. Without
+    this, two concurrent jobs writing SSE chunks contend for the SQLite write
+    lock and busy-wait up to ``timeout=10s`` *inside* the loop, wedging the
+    entire server (UI freeze + reload hang, no terminal error).
+    """
+    await asyncio.to_thread(datastore.mark_agent_job_status, job_id, "running")
+    await asyncio.to_thread(
+        datastore.append_agent_job_event,
+        job_id,
+        event_type="job_started",
+        data=json.dumps({"ts": int(time.time())}),
     )
     started_ms = int(time.time() * 1000)
     # Usage totals accumulated across all turns of this job.
@@ -95,7 +105,7 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
     session_id: str | None = None
     project_id: str | None = None
     try:
-        job = datastore.get_agent_job(job_id)
+        job = await asyncio.to_thread(datastore.get_agent_job, job_id)
         if not job:
             raise RuntimeError(f"job {job_id} vanished after creation")
         payload = json.loads(job["request_json"])
@@ -108,42 +118,50 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             "project_id"
         )
         if project_id:
-            project = datastore.get_project(project_id)
+            project = await asyncio.to_thread(datastore.get_project, project_id)
             if project:
+                # ALWAYS inject a project-header block so the model can answer
+                # meta-questions like "which project am I in?". Previously only
+                # the user-supplied shared_context was injected, which left the
+                # model blind whenever shared_context was empty (the default).
+                name = (project.get("name") or "").strip() or "(unnamed)"
+                ws = (project.get("workspace_path") or "").strip()
+                desc = (project.get("description") or "").strip()
+                header_lines = [
+                    "You are assisting inside a Companion project. Use this as the"
+                    " authoritative answer if the user asks which project,"
+                    " workspace, or context the chat is linked to.",
+                    f"Project name: {name}",
+                    f"Project ID: {project_id}",
+                    f"Workspace path: {ws or '(not set)'}",
+                ]
+                if desc:
+                    header_lines.append(f"Project description: {desc}")
                 shared = (project.get("shared_context") or "").strip()
                 if shared:
-                    existing = payload.get("system")
-                    if existing is None:
-                        payload["system"] = shared
-                    elif isinstance(existing, str):
-                        payload["system"] = shared + "\n\n" + existing
-                    elif isinstance(existing, list):
-                        payload["system"] = [
-                            {"type": "text", "text": shared},
-                            *existing,
-                        ]
-                # Inject pinned memories as bullet-point context.
-                memories = datastore.list_memories(project_id)
+                    header_lines.append("Project brief:\n" + shared)
+                memories = await asyncio.to_thread(datastore.list_memories, project_id)
                 if memories:
                     bullets = "\n".join(f"- {m['content']}" for m in memories)
-                    memory_block = (
-                        "Memory you must respect for this project:\n" + bullets
+                    header_lines.append(
+                        "Pinned memories you must respect for this project:\n" + bullets
                     )
-                    current_sys = payload.get("system")
-                    if current_sys is None:
-                        payload["system"] = memory_block
-                    elif isinstance(current_sys, str):
-                        payload["system"] = current_sys + "\n\n" + memory_block
-                    elif isinstance(current_sys, list):
-                        payload["system"] = [
-                            *current_sys,
-                            {"type": "text", "text": memory_block},
-                        ]
+                project_block = "\n\n".join(header_lines)
+
+                existing = payload.get("system")
+                if existing is None:
+                    payload["system"] = project_block
+                elif isinstance(existing, str):
+                    payload["system"] = project_block + "\n\n" + existing
+                elif isinstance(existing, list):
+                    payload["system"] = [
+                        {"type": "text", "text": project_block},
+                        *existing,
+                    ]
 
                 # Inject project workspace_path so file tools resolve
                 # relative paths (e.g. "README.md") against the project
                 # root instead of the server's CWD (BUG-002).
-                ws = (project.get("workspace_path") or "").strip()
                 if ws:
                     pm = payload.get("metadata")
                     if pm is None:
@@ -189,14 +207,25 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             tool_call_limit_per_minute=settings.agent_tool_call_limit_per_minute,
             global_limiter=global_limiter,
         ):
-            datastore.append_agent_job_event(job_id, event_type="sse", data=chunk)
+            await asyncio.to_thread(
+                datastore.append_agent_job_event,
+                job_id,
+                event_type="sse",
+                data=chunk,
+            )
             _accumulate_chunk_usage(chunk, accumulated_usage)
 
-        datastore.mark_agent_job_status(job_id, "done")
-        datastore.append_agent_job_event(
-            job_id, event_type="job_finished", data=json.dumps({"status": "done"})
+        # Persist the terminal lifecycle event + usage BEFORE flipping
+        # ``status`` to a terminal value. Polling clients (and tests) treat
+        # ``status in {"done","error","cancelled"}`` as "everything is
+        # persisted", so the status flip must be the last side effect.
+        await asyncio.to_thread(
+            datastore.append_agent_job_event,
+            job_id,
+            event_type="job_finished",
+            data=json.dumps({"status": "done"}),
         )
-        _record_job_usage(
+        await _record_job_usage(
             job_id=job_id,
             provider_id=provider_id,
             provider_model=provider_model,
@@ -205,13 +234,16 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             session_id=session_id,
             project_id=project_id,
         )
+        await asyncio.to_thread(datastore.mark_agent_job_status, job_id, "done")
         await _maybe_notify(job_id, settings)
     except asyncio.CancelledError:
-        datastore.mark_agent_job_status(job_id, "cancelled")
-        datastore.append_agent_job_event(
-            job_id, event_type="job_finished", data=json.dumps({"status": "cancelled"})
+        await asyncio.to_thread(
+            datastore.append_agent_job_event,
+            job_id,
+            event_type="job_finished",
+            data=json.dumps({"status": "cancelled"}),
         )
-        _record_job_usage(
+        await _record_job_usage(
             job_id=job_id,
             provider_id=provider_id,
             provider_model=provider_model,
@@ -220,16 +252,17 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             session_id=session_id,
             project_id=project_id,
         )
+        await asyncio.to_thread(datastore.mark_agent_job_status, job_id, "cancelled")
         raise
     except Exception as exc:
         logger.exception("Agent job {} failed: {}", job_id, exc)
-        datastore.mark_agent_job_status(job_id, "error", error=str(exc))
-        datastore.append_agent_job_event(
+        await asyncio.to_thread(
+            datastore.append_agent_job_event,
             job_id,
             event_type="job_error",
             data=json.dumps({"error": str(exc), "type": type(exc).__name__}),
         )
-        _record_job_usage(
+        await _record_job_usage(
             job_id=job_id,
             provider_id=provider_id,
             provider_model=provider_model,
@@ -237,6 +270,9 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             started_ms=started_ms,
             session_id=session_id,
             project_id=project_id,
+        )
+        await asyncio.to_thread(
+            datastore.mark_agent_job_status, job_id, "error", error=str(exc)
         )
         await _maybe_notify(job_id, settings)
 
@@ -280,7 +316,7 @@ def _accumulate_chunk_usage(chunk: str, aggregate: dict[str, int]) -> None:
         pass  # never let usage parsing crash the job
 
 
-def _record_job_usage(
+async def _record_job_usage(
     *,
     job_id: str,
     provider_id: str,
@@ -290,7 +326,7 @@ def _record_job_usage(
     session_id: str | None,
     project_id: str | None,
 ) -> None:
-    """Persist accumulated usage to the datastore. Best-effort."""
+    """Persist accumulated usage to the datastore. Best-effort. Off-loop."""
     if not usage:
         return
     input_tokens = usage.get("input_tokens", 0)
@@ -305,7 +341,8 @@ def _record_job_usage(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )
-    datastore.record_usage(
+    await asyncio.to_thread(
+        datastore.record_usage,
         kind="chat",
         provider=provider_id or "unknown",
         model=provider_model or "unknown",
@@ -339,7 +376,7 @@ async def _maybe_notify(job_id: str, settings: Settings) -> None:
     """Fire the job notifier when configured and the job was long enough."""
     if not settings.slack_webhook_url and not settings.discord_webhook_url:
         return
-    job = datastore.get_agent_job(job_id)
+    job = await asyncio.to_thread(datastore.get_agent_job, job_id)
     if not job:
         return
     started = job.get("started_at")
@@ -367,11 +404,17 @@ async def event_stream(job_id: str, *, after_seq: int = -1) -> AsyncIterator[str
     Emits both stored SSE events and a sentinel ``: heartbeat`` comment every
     few seconds when idle, so reverse proxies don't time out the connection.
     Closes when the job reaches a terminal status AND we've drained all events.
+
+    All ``datastore.*`` calls run via :func:`asyncio.to_thread` so a slow
+    SQLite read (write-lock contention with concurrent jobs) never blocks the
+    asyncio event loop.
     """
     last_seq = after_seq
     idle_since = time.monotonic()
     while True:
-        batch = datastore.list_agent_job_events(job_id, after_seq=last_seq)
+        batch = await asyncio.to_thread(
+            datastore.list_agent_job_events, job_id, after_seq=last_seq
+        )
         if batch:
             idle_since = time.monotonic()
             for ev in batch:
@@ -379,11 +422,11 @@ async def event_stream(job_id: str, *, after_seq: int = -1) -> AsyncIterator[str
                 yield _format_outbound_event(ev)
         else:
             yield ": heartbeat\n\n"
-            job = datastore.get_agent_job(job_id)
+            job = await asyncio.to_thread(datastore.get_agent_job, job_id)
             terminal_statuses = ("done", "error", "cancelled")
             if job and job.get("status") in terminal_statuses:
                 # Job finished and no more events queued — close the stream.
-                latest = datastore.latest_agent_job_seq(job_id)
+                latest = await asyncio.to_thread(datastore.latest_agent_job_seq, job_id)
                 if latest <= last_seq:
                     return
             if time.monotonic() - idle_since > _TAIL_IDLE_TIMEOUT_S:

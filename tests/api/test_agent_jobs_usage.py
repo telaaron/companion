@@ -163,10 +163,11 @@ def test_accumulate_cache_tokens() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_record_job_usage_writes_row(fresh_db: None) -> None:
+@pytest.mark.asyncio
+async def test_record_job_usage_writes_row(fresh_db: None) -> None:
     session = datastore.upsert_session(title="test")
     sid = session["id"]
-    _record_job_usage(
+    await _record_job_usage(
         job_id="job_test_123",
         provider_id="deepseek",
         provider_model="deepseek-v4-flash",
@@ -181,11 +182,12 @@ def test_record_job_usage_writes_row(fresh_db: None) -> None:
     assert agg["events"] == 1
 
 
-def test_record_job_usage_no_op_when_empty(fresh_db: None) -> None:
+@pytest.mark.asyncio
+async def test_record_job_usage_no_op_when_empty(fresh_db: None) -> None:
     """Empty usage dict must not write a row (nothing to record)."""
     session = datastore.upsert_session(title="test2")
     sid = session["id"]
-    _record_job_usage(
+    await _record_job_usage(
         job_id="job_empty",
         provider_id="deepseek",
         provider_model="deepseek-v4-flash",
@@ -198,11 +200,12 @@ def test_record_job_usage_no_op_when_empty(fresh_db: None) -> None:
     assert agg["events"] == 0
 
 
-def test_record_job_usage_cost_is_nonzero_for_known_model(fresh_db: None) -> None:
+@pytest.mark.asyncio
+async def test_record_job_usage_cost_is_nonzero_for_known_model(fresh_db: None) -> None:
     """deepseek-v4-flash has a known price, so cost_usd should be > 0."""
     session = datastore.upsert_session(title="cost_test")
     sid = session["id"]
-    _record_job_usage(
+    await _record_job_usage(
         job_id="job_cost",
         provider_id="deepseek",
         provider_model="deepseek-v4-flash",

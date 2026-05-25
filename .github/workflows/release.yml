@@ -45,6 +45,21 @@ jobs:
         # not required for the bundled binary.
         run: uv sync --dev
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build SvelteKit UI
+        # PyInstaller bundles web/build into the frozen binary so the
+        # bundled app serves the modern UI. Must run before PyInstaller.
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
       - name: Build Python binary
         run: |
           uv run pyinstaller packaging/companion-bin.spec \
@@ -121,6 +136,21 @@ jobs:
       - name: Make binary executable (Unix)
         if: runner.os != 'Windows'
         run: chmod +x packaging/dist/companion-bin
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+
+      - name: Build SvelteKit UI
+        working-directory: web
+        run: npm run build
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked

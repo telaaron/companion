@@ -33,6 +33,13 @@ datas: list[tuple[str, str]] = [
     (str(REPO / ".env.example"), "."),
 ]
 
+# Modern SvelteKit build, if present. Mounted in preference to the legacy
+# vanilla ui_static bundle by ``api/app.py`` so the frozen binary serves
+# the new UI when web/build is produced before the PyInstaller run.
+_svelte_build = REPO / "web" / "build"
+if _svelte_build.is_dir():
+    datas.append((str(_svelte_build), "web/build"))
+
 # Pull in tiktoken's bundled BPE encoder files — required for token counts.
 datas += collect_data_files("tiktoken")
 datas += collect_data_files("tiktoken_ext")

@@ -299,15 +299,23 @@
   let currentRoute = location.hash.replace("#", "") || "chat";
   if (!ROUTES[currentRoute]) currentRoute = "chat";
 
-  function setRoute(name) {
+  async function setRoute(name) {
     if (!ROUTES[name]) return;
     currentRoute = name;
     location.hash = name;
     $$(".nav-item").forEach((b) =>
       b.classList.toggle("active", b.dataset.route === name)
     );
-    ROUTES[name].render();
+    // Initial paint pass — covers any synchronous content rendered eagerly.
     if (typeof lucide !== "undefined") lucide.createIcons();
+    try {
+      await ROUTES[name].render();
+    } finally {
+      // Final paint pass — covers DOM nodes inserted after async fetches resolve.
+      // Without this second call, icons inserted by editable kv-cards, dropdowns,
+      // and other lazy widgets stay as <i data-lucide="..."> placeholders forever.
+      if (typeof lucide !== "undefined") lucide.createIcons();
+    }
   }
 
   function pageHeader({ title, sub, actions = [] }) {
@@ -3598,16 +3606,18 @@
               ? el(
                   "button",
                   {
-                    class: "btn btn-ghost btn-sm",
+                    class: "btn btn-ghost btn-sm btn-icon",
                     type: "button",
                     title: "Edit",
                     onclick: () => beginEdit(),
                   },
-                  el("i", { "data-lucide": "pencil" })
+                  el("i", { "data-lucide": "pencil", style: { width: "14px", height: "14px" } })
                 )
               : null
           )
         );
+        // Re-render lucide placeholders that were just inserted.
+        if (typeof lucide !== "undefined") lucide.createIcons();
       };
       const beginEdit = () => {
         valueCell.innerHTML = "";

@@ -1411,6 +1411,22 @@ hr {
   font-size: var(--fs-12);
 }
 
+/* Icon-only buttons (pencil/trash inside tables) — keep SVG small + crisp. */
+.btn-icon {
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+.btn-icon svg,
+.table svg[data-lucide],
+.table .btn-ghost svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+
 /* ============================================================ Toasts */
 
 .toast-stack {

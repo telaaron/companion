@@ -922,6 +922,15 @@ hr {
   opacity: 0.5;
   cursor: default;
 }
+.mic-btn.mic-btn-disabled {
+  opacity: 0.35;
+  cursor: help;
+}
+.mic-btn.mic-btn-disabled:hover {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg-faint);
+}
 
 @keyframes voice-pulse {
   0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }

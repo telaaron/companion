@@ -21,44 +21,39 @@
 
 ## Offene Bugs
 
-### BUG-001: File Preview Panel — Tool-Blocks nicht klickbar
-**Status**: offen
-**Symptom**: Agent liest README.md, aber kein klickbarer Tool-Block erscheint. Rechter Preview-Panel oeffnet nicht.
-**Reproduzieren**: Chat starten → "Lies meine README.md" → Tool-Block kommt als Text, kein klickbarer Link
-**Erwartet**: Tool-Block zeigt "● Read(pfad)" als klickbares Element → Klick oeffnet File-Preview-Panel rechts
-**Dateien**:
-- `api/ui_static/app.js` — Funktion `_trackMsg()` um Zeile 1124, Event-Delegation auf `messages` um Zeile 1087
-- CSS-Klasse `.tool-block-clickable` in `api/ui_static/styles.css`
-**Notizen**: Preview-Panel-Code ist in `openPreviewPanel()`. Der Endpoint `/v1/preview/file?path=...` existiert in `api/dashboard_routes.py`.
-
----
-
-### BUG-002: Projekt-Kontext fehlt beim Datei-Zugriff
-**Status**: offen
-**Symptom**: Agent wird nach "meine README.md" gefragt, sucht global ueberall statt im Projekt-Workspace
-**Reproduzieren**: Projekt "companion" anlegen, Workspace auf `/Users/.../companion` setzen → Chat im Projekt-Kontext → "Lies README.md" → Agent sucht in Home-Dir
-**Erwartet**: Agent liest zuerst aus dem konfigurierten Workspace-Pfad des aktiven Projekts
-**Dateien**:
-- `api/agent/jobs.py` — `_run_job()`: workspace resolution, `project_id` ist verfuegbar
-- `api/agent/workspace_resolver.py` — `AGENT_DEFAULT_WORKSPACE_<user>` Env-Override
-- `api/dashboard_routes.py` — `GET /v1/sessions/{id}` gibt `project_id` zurueck
-**Notizen**: Das Projekt hat ein `workspace_path` Feld in der DB (`projects.workspace_path`). Dieser muss als default Workspace des Jobs gesetzt werden wenn `project_id` gesetzt ist.
-
----
-
-### BUG-003: Voice-Button — Transkript erscheint nicht (ohne Whisper)
-**Status**: offen
-**Symptom**: Mic-Button erscheint, Aufnahme startet (pulsiert rot). Aber nach Stop: kein Text im Input-Feld
-**Reproduzieren**: Mic-Button klicken, sprechen, nochmal klicken → Input bleibt leer
-**Erwartet**: Transkript erscheint im Textarea
-**Dateien**:
-- `api/dashboard_routes.py` — `POST /v1/transcribe` Endpoint
-- `config/settings.py` — `whisper_binary`, `whisper_model`
-**Notizen**: Wenn `WHISPER_BINARY` nicht gesetzt ist, gibt der Endpoint vermutlich Fehler zurueck oder leeren Text. Endpoint koennte auch einen sinnvolleren Fehler zurueckgeben oder fallback anbieten. Pruefen: was gibt `/v1/transcribe` ohne Whisper zurueck?
+_(none — alle bekannten Bugs gefixt 2026-05-25)_
 
 ---
 
 ## Gefixte Bugs
+
+### BUG-F10: Voice-Button — Transkript erscheint nicht (ohne Whisper)
+**Status**: gefixt (uncommitted, 2026-05-25)
+**Root cause**: Mic-Button war immer aktiv, auch wenn `WHISPER_BINARY` ungesetzt + `WHISPER_DEVICE=cpu` (= keine Backend-Konfiguration). User klickte, sprach, bekam 503 mit zerfasertem `detail`-String den der toast halbwegs zeigte — aber kein Hinweis dass der Backend gar nicht erst aufzurufen ist.
+**Fix**:
+- Neuer Endpoint `GET /v1/voice/status` → `{available, backend, reason}`. Frontend probiert das einmal beim Mic-Button-Bau (caching: ein Probe pro Page-Load).
+- Bei `available=false`: Button bleibt sichtbar aber bekommt CSS-Klasse `mic-btn-disabled` (gedimmt, `cursor: help`) + Tooltip mit dem `reason`. Klick zeigt Toast statt MediaRecorder-Aufnahme zu starten.
+- Vier Fälle differenziert: `voice_note_enabled=false`, `whisper-cpp ok`, `nvidia_nim` (mit/ohne Key), `none`.
+**Files**: `api/dashboard_routes.py` (+39 LOC neuer Endpoint), `api/ui_static/app.js` (Probe-Cache + Disabled-State), `api/ui_static/styles.css` (`.mic-btn-disabled` Klasse), `tests/api/test_voice.py` (+5 Tests).
+
+---
+
+### BUG-F11: Tool-Blocks nicht klickbar bei langen Pfaden
+**Status**: gefixt (uncommitted, 2026-05-25)
+**Root cause**: `api/agent/agent_loop_streaming.py::_summarise_input` truncated ALLE Tool-Args bei >80 Zeichen mit `…`. Für File-Ops (`Read`/`Write`/`Edit`/`LS`) landete der truncated Pfad im `data-filepath`-Attribut des UI Tool-Blocks. Klick öffnete dann `openPreviewPanel("/Users/aaron/Dateien - Lo…")` → 404. Bei kurzen Pfaden funktionierte alles, weshalb der Bug nur bei tief-genesteten Projekten auftrat.
+**Fix**: File-Ops behalten den vollen Pfad. CSS macht ohnehin `text-overflow: ellipsis` auf `.tool-args` — Display-Truncation gehört nicht in Backend-Daten.
+**Files**: `api/agent/agent_loop_streaming.py`, `tests/api/test_agent_loop_streaming.py` (+2 Regression-Tests: Format matched JS regex, lange Pfade werden 1:1 emittiert).
+
+---
+
+### BUG-F12: Projekt-Kontext fehlt beim Datei-Zugriff (Workspace-Resolver)
+**Status**: gefixt (uncommitted, 2026-05-25) — Code-Path war schon in BUG-F07 fix korrekt; jetzt mit Test-Suite abgesichert.
+**Root cause**: `api/agent/jobs.py::_run_job` injizierte `payload["metadata"]["workspace_path"]` aus dem Projekt nur wenn `setdefault` nicht durch existing-key ueberschrieben wurde. Funktional korrekt — aber ungetestet, daher Regression-Risiko bei Refactor.
+**Fix**: Vollständige Test-Suite für `workspace_resolver.py` mit allen 5 Prioritätsstufen (explicit metadata > project_id → DB lookup > per-user env > global default > CWD). 6 Tests inkl. edge cases (vanished project_id, empty workspace_path).
+**Files**: `tests/api/test_workspace_resolver.py` (neu, 6 Tests).
+**Folgeaktion fuer Aaron**: Companion-Projekt in der UI hat noch `workspace_path = ~/companion` (stale). Im UI auf `~/Dateien - Local/companion` umstellen, sonst loesen File-Tools relative Pfade falsch auf.
+
+---
 
 ### BUG-F08: Tauri-Desktop-App + GitHub-Download fehlten
 **Status**: gefixt (uncommitted, 2026-05-24)

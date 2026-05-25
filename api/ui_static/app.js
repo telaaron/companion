@@ -875,6 +875,18 @@
   // Mic icon button in composer row. Click to start/stop recording.
   // Returns button node (null if MediaRecorder unavailable).
 
+  // Cached voice-status probe. Filled on first build call; subsequent
+  // builds (each chat-host render) reuse the cached result instead of
+  // hammering the endpoint.
+  let _voiceStatusPromise = null;
+  function _probeVoiceStatus() {
+    if (_voiceStatusPromise) return _voiceStatusPromise;
+    _voiceStatusPromise = api("/v1/voice/status")
+      .then((s) => s || { available: false, backend: "none", reason: "" })
+      .catch(() => ({ available: false, backend: "unknown", reason: "" }));
+    return _voiceStatusPromise;
+  }
+
   function _buildVoiceButton(ta) {
     if (!window.MediaRecorder || !navigator.mediaDevices) return null;
 
@@ -882,6 +894,20 @@
     let _mediaRecorder = null;
     let _stream = null;
     let _chunks = [];
+    // Voice-backend status — populated asynchronously after construction so
+    // the button still renders synchronously next to the send-button.
+    // When unavailable, clicking shows a one-line hint toast instead of
+    // silently failing inside the MediaRecorder pipeline (BUG-003).
+    let _voiceStatus = null;
+    _probeVoiceStatus().then((s) => {
+      _voiceStatus = s;
+      if (!s.available) {
+        btn.classList.add("mic-btn-disabled");
+        btn.title = s.reason
+          ? `Voice unavailable: ${s.reason}`
+          : "Voice unavailable — set WHISPER_BINARY in .env";
+      }
+    });
 
     const btn = el("button", {
       class: "mic-btn",
@@ -890,6 +916,14 @@
     }, el("i", { "data-lucide": "mic" }));
 
     async function _start() {
+      if (_voiceStatus && !_voiceStatus.available) {
+        toastShow(
+          _voiceStatus.reason ||
+            "Voice transcription not configured. Set WHISPER_BINARY in .env.",
+          "warning"
+        );
+        return;
+      }
       try {
         _stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (_e) {
@@ -1578,7 +1612,18 @@
       stickToBottom = isNearBottom();
     });
 
-    const renderBody = () => {
+    // renderBody() is hot during streaming — each SSE chunk used to trigger
+    // a full ``innerHTML = md(content)`` reparse. With 1000 chunks that is
+    // 1000 markdown re-parses + 1000 DOM diffs. requestAnimationFrame
+    // collapses bursts into at most one render per paint (~60 fps), and a
+    // micro-optimisation skips work when content has not actually changed
+    // (e.g. consecutive empty-data chunks).
+    let _renderScheduled = false;
+    let _lastRenderedContent = "";
+    const _renderBodyNow = () => {
+      _renderScheduled = false;
+      if (assistant.content === _lastRenderedContent) return;
+      _lastRenderedContent = assistant.content;
       const body = node.querySelector(".message-body");
       if (body) body.innerHTML = md(assistant.content);
       // Only auto-scroll when the user has been at-bottom recently. If they
@@ -1589,6 +1634,18 @@
         // 1 minute of no scroll interaction — assume idle and snap back.
         messagesHost.scrollTop = messagesHost.scrollHeight;
       }
+    };
+    const renderBody = () => {
+      if (_renderScheduled) return;
+      _renderScheduled = true;
+      requestAnimationFrame(_renderBodyNow);
+    };
+    // flushRender() forces a synchronous render — used at stream end so the
+    // final state lands before we attach regenerate buttons / persist.
+    const flushRender = () => {
+      _renderScheduled = false;
+      _lastRenderedContent = "";  // force a render even if string unchanged
+      _renderBodyNow();
     };
 
     // Register file-tool paths in the preview LRU as they stream in.
@@ -1796,7 +1853,7 @@
         assistant.content +=
           (assistant.content ? "\n\n" : "") + "_— cancelled by user_";
       }
-      renderBody();
+      flushRender();
       cancelBtn.remove();
       setActiveJob(session.id, null);
       // Attach regenerate button now that the reply is finalized.

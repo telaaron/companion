@@ -2325,6 +2325,49 @@ async def _transcribe_via_nim(
         raise HTTPException(502, f"NIM transcription failed: {exc}") from exc
 
 
+@dashboard_router.get("/v1/voice/status")
+async def voice_status(
+    settings: Settings = Depends(get_settings),
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Report whether voice transcription is configured (BUG-003).
+
+    The frontend probes this once at startup so the mic button can be
+    rendered in a sensible state (active vs. disabled-with-hint) instead of
+    only failing on first use.
+
+    Returns ``{available, backend, reason}``.
+    """
+    if not settings.voice_note_enabled:
+        return {
+            "available": False,
+            "backend": "disabled",
+            "reason": "Voice mode is disabled (VOICE_NOTE_ENABLED=false).",
+        }
+    whisper_binary = settings.whisper_binary.strip()
+    if whisper_binary:
+        return {"available": True, "backend": "whisper-cpp", "reason": None}
+    if settings.whisper_device == "nvidia_nim":
+        api_key = settings.nvidia_nim_api_key.strip()
+        if not api_key:
+            return {
+                "available": False,
+                "backend": "nvidia_nim",
+                "reason": (
+                    "WHISPER_DEVICE=nvidia_nim but NVIDIA_NIM_API_KEY is not set."
+                ),
+            }
+        return {"available": True, "backend": "nvidia_nim", "reason": None}
+    return {
+        "available": False,
+        "backend": "none",
+        "reason": (
+            "Voice transcription not configured. Set WHISPER_BINARY "
+            "(path to whisper.cpp) or WHISPER_DEVICE=nvidia_nim."
+        ),
+    }
+
+
 @dashboard_router.post("/v1/transcribe")
 async def transcribe_audio(
     audio: UploadFile = File(...),

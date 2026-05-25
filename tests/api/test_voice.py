@@ -363,3 +363,84 @@ def test_settings_voice_defaults() -> None:
     assert s.elevenlabs_voice_id == "21m00Tcm4TlvDq8ikWAM"
     assert s.whisper_binary == ""
     assert s.voice_auto_send is False
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/voice/status — BUG-003 regression guard
+# ---------------------------------------------------------------------------
+
+
+def test_voice_status_whisper_cpp_available(client: tuple[TestClient, Any]) -> None:
+    """WHISPER_BINARY set → available=True, backend=whisper-cpp."""
+    c, app = client
+    settings = _make_settings(
+        voice_note_enabled=True, whisper_binary="/usr/local/bin/whisper"
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    r = c.get("/v1/voice/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["backend"] == "whisper-cpp"
+    assert body["reason"] is None
+
+
+def test_voice_status_nim_available(client: tuple[TestClient, Any]) -> None:
+    """WHISPER_DEVICE=nvidia_nim + key set → available=True."""
+    c, app = client
+    settings = _make_settings(
+        voice_note_enabled=True,
+        whisper_binary="",
+        whisper_device="nvidia_nim",
+        nvidia_nim_api_key="key",
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    r = c.get("/v1/voice/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["backend"] == "nvidia_nim"
+
+
+def test_voice_status_nim_no_key(client: tuple[TestClient, Any]) -> None:
+    """nvidia_nim selected but no API key → available=False with reason."""
+    c, app = client
+    settings = _make_settings(
+        voice_note_enabled=True,
+        whisper_binary="",
+        whisper_device="nvidia_nim",
+        nvidia_nim_api_key="",
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    r = c.get("/v1/voice/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is False
+    assert "NVIDIA_NIM_API_KEY" in body["reason"]
+
+
+def test_voice_status_unconfigured(client: tuple[TestClient, Any]) -> None:
+    """Nothing configured → available=False with helpful reason (BUG-003)."""
+    c, app = client
+    settings = _make_settings(
+        voice_note_enabled=True, whisper_binary="", whisper_device="cpu"
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    r = c.get("/v1/voice/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is False
+    assert body["backend"] == "none"
+    assert "WHISPER_BINARY" in body["reason"]
+
+
+def test_voice_status_disabled(client: tuple[TestClient, Any]) -> None:
+    """VOICE_NOTE_ENABLED=false → available=False, backend=disabled."""
+    c, app = client
+    settings = _make_settings(voice_note_enabled=False)
+    app.dependency_overrides[get_settings] = lambda: settings
+    r = c.get("/v1/voice/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is False
+    assert body["backend"] == "disabled"

@@ -40,7 +40,10 @@ jobs:
         run: uv python install 3.14
 
       - name: Sync project deps
-        run: uv sync --all-extras --dev
+        # Skip ``voice_local`` extra — it pulls in torch+cu130 which has no
+        # macOS-arm64 wheel. Voice transcription is opt-in at runtime and
+        # not required for the bundled binary.
+        run: uv sync --dev
 
       - name: Build Python binary
         run: |

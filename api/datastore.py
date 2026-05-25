@@ -950,20 +950,28 @@ def mark_agent_job_status(job_id: str, status: str, *, error: str = "") -> None:
 
 
 def append_agent_job_event(job_id: str, *, event_type: str, data: str) -> int:
-    """Append one event to ``agent_job_events``. Returns the new seq number."""
+    """Append one event to ``agent_job_events``. Returns the new ``seq``.
+
+    Implemented as a single ``INSERT … RETURNING`` so the write hits SQLite
+    exactly once per chunk; the previous "SELECT MAX then INSERT" pattern
+    doubled the write-lock pressure during high-rate SSE streams. The seq
+    is computed inside the INSERT via a correlated subquery, which is safe
+    because there is exactly one writer per ``job_id`` (the owning
+    ``_run_job`` task).
+    """
     now = _ts()
     with _connect() as conn:
         row = conn.execute(
-            "SELECT COALESCE(MAX(seq), -1) FROM agent_job_events WHERE job_id=?",
-            (job_id,),
+            "INSERT INTO agent_job_events (job_id, seq, ts, event_type, data) "
+            "VALUES ("
+            "  ?,"
+            "  (SELECT COALESCE(MAX(seq), -1) + 1 FROM agent_job_events"
+            "    WHERE job_id = ?),"
+            "  ?, ?, ?"
+            ") RETURNING seq",
+            (job_id, job_id, now, event_type, data),
         ).fetchone()
-        next_seq = (row[0] if row else -1) + 1
-        conn.execute(
-            "INSERT INTO agent_job_events (job_id, seq, ts, event_type, data)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (job_id, next_seq, now, event_type, data),
-        )
-    return next_seq
+    return int(row[0]) if row else 0
 
 
 def list_agent_job_events(

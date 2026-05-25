@@ -37,8 +37,60 @@ from providers.base import BaseProvider
 
 # Active tasks keyed by job_id — kept so we can cancel from /v1/jobs/{id}/cancel.
 _ACTIVE_TASKS: dict[str, asyncio.Task[None]] = {}
-_TAIL_POLL_SECONDS = 0.25
+_TAIL_HEARTBEAT_SECONDS = 5.0  # event_stream heartbeat cadence when idle
 _TAIL_IDLE_TIMEOUT_S = 600  # how long to wait for new events after the job is done
+
+# Lightweight in-process pub/sub so ``event_stream`` consumers can be woken
+# the moment a new event lands instead of polling SQLite every 250 ms. Each
+# active ``event_stream`` call subscribes its own :class:`asyncio.Event` to
+# the job_id; ``_notify_job`` (called from ``_run_job`` after every write)
+# wakes all subscribers. The dict is process-local, which is fine because
+# Companion runs as a single uvicorn worker.
+_JOB_EVENT_WAITERS: dict[str, set[asyncio.Event]] = {}
+
+
+def _subscribe_job_events(job_id: str) -> asyncio.Event:
+    ev = asyncio.Event()
+    _JOB_EVENT_WAITERS.setdefault(job_id, set()).add(ev)
+    return ev
+
+
+def _unsubscribe_job_events(job_id: str, ev: asyncio.Event) -> None:
+    waiters = _JOB_EVENT_WAITERS.get(job_id)
+    if waiters is None:
+        return
+    waiters.discard(ev)
+    if not waiters:
+        _JOB_EVENT_WAITERS.pop(job_id, None)
+
+
+def _notify_job_event(job_id: str) -> None:
+    """Wake all ``event_stream`` consumers tailing ``job_id``."""
+    waiters = _JOB_EVENT_WAITERS.get(job_id)
+    if not waiters:
+        return
+    for ev in waiters:
+        ev.set()
+
+
+async def _persist_event(job_id: str, *, event_type: str, data: str) -> int:
+    """Append an event row off-loop and wake tailers in one step."""
+    seq = await asyncio.to_thread(
+        datastore.append_agent_job_event,
+        job_id,
+        event_type=event_type,
+        data=data,
+    )
+    _notify_job_event(job_id)
+    return seq
+
+
+async def _persist_status(job_id: str, status: str, *, error: str = "") -> None:
+    """Update agent_jobs.status off-loop and wake tailers."""
+    await asyncio.to_thread(
+        datastore.mark_agent_job_status, job_id, status, error=error
+    )
+    _notify_job_event(job_id)
 
 
 def start_job(
@@ -90,9 +142,8 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
     lock and busy-wait up to ``timeout=10s`` *inside* the loop, wedging the
     entire server (UI freeze + reload hang, no terminal error).
     """
-    await asyncio.to_thread(datastore.mark_agent_job_status, job_id, "running")
-    await asyncio.to_thread(
-        datastore.append_agent_job_event,
+    await _persist_status(job_id, "running")
+    await _persist_event(
         job_id,
         event_type="job_started",
         data=json.dumps({"ts": int(time.time())}),
@@ -207,20 +258,14 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             tool_call_limit_per_minute=settings.agent_tool_call_limit_per_minute,
             global_limiter=global_limiter,
         ):
-            await asyncio.to_thread(
-                datastore.append_agent_job_event,
-                job_id,
-                event_type="sse",
-                data=chunk,
-            )
+            await _persist_event(job_id, event_type="sse", data=chunk)
             _accumulate_chunk_usage(chunk, accumulated_usage)
 
         # Persist the terminal lifecycle event + usage BEFORE flipping
         # ``status`` to a terminal value. Polling clients (and tests) treat
         # ``status in {"done","error","cancelled"}`` as "everything is
         # persisted", so the status flip must be the last side effect.
-        await asyncio.to_thread(
-            datastore.append_agent_job_event,
+        await _persist_event(
             job_id,
             event_type="job_finished",
             data=json.dumps({"status": "done"}),
@@ -234,11 +279,10 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             session_id=session_id,
             project_id=project_id,
         )
-        await asyncio.to_thread(datastore.mark_agent_job_status, job_id, "done")
+        await _persist_status(job_id, "done")
         await _maybe_notify(job_id, settings)
     except asyncio.CancelledError:
-        await asyncio.to_thread(
-            datastore.append_agent_job_event,
+        await _persist_event(
             job_id,
             event_type="job_finished",
             data=json.dumps({"status": "cancelled"}),
@@ -252,12 +296,11 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             session_id=session_id,
             project_id=project_id,
         )
-        await asyncio.to_thread(datastore.mark_agent_job_status, job_id, "cancelled")
+        await _persist_status(job_id, "cancelled")
         raise
     except Exception as exc:
         logger.exception("Agent job {} failed: {}", job_id, exc)
-        await asyncio.to_thread(
-            datastore.append_agent_job_event,
+        await _persist_event(
             job_id,
             event_type="job_error",
             data=json.dumps({"error": str(exc), "type": type(exc).__name__}),
@@ -271,9 +314,7 @@ async def _run_job(job_id: str, *, settings: Settings, provider_getter) -> None:
             session_id=session_id,
             project_id=project_id,
         )
-        await asyncio.to_thread(
-            datastore.mark_agent_job_status, job_id, "error", error=str(exc)
-        )
+        await _persist_status(job_id, "error", error=str(exc))
         await _maybe_notify(job_id, settings)
 
 
@@ -411,28 +452,39 @@ async def event_stream(job_id: str, *, after_seq: int = -1) -> AsyncIterator[str
     """
     last_seq = after_seq
     idle_since = time.monotonic()
-    while True:
-        batch = await asyncio.to_thread(
-            datastore.list_agent_job_events, job_id, after_seq=last_seq
-        )
-        if batch:
-            idle_since = time.monotonic()
-            for ev in batch:
-                last_seq = ev["seq"]
-                yield _format_outbound_event(ev)
-        else:
+    waker = _subscribe_job_events(job_id)
+    try:
+        while True:
+            batch = await asyncio.to_thread(
+                datastore.list_agent_job_events, job_id, after_seq=last_seq
+            )
+            if batch:
+                idle_since = time.monotonic()
+                for ev in batch:
+                    last_seq = ev["seq"]
+                    yield _format_outbound_event(ev)
+                # Drain any signal that fired while we were emitting.
+                waker.clear()
+                continue
+
+            # No new events — emit a heartbeat so the proxy sees traffic,
+            # check terminal status, then wait for the next write (or fall
+            # through after the heartbeat interval).
             yield ": heartbeat\n\n"
             job = await asyncio.to_thread(datastore.get_agent_job, job_id)
             terminal_statuses = ("done", "error", "cancelled")
             if job and job.get("status") in terminal_statuses:
-                # Job finished and no more events queued — close the stream.
                 latest = await asyncio.to_thread(datastore.latest_agent_job_seq, job_id)
                 if latest <= last_seq:
                     return
             if time.monotonic() - idle_since > _TAIL_IDLE_TIMEOUT_S:
-                # Safety: never tail forever if we somehow lose the terminal marker.
                 return
-        await asyncio.sleep(_TAIL_POLL_SECONDS)
+
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(waker.wait(), timeout=_TAIL_HEARTBEAT_SECONDS)
+            waker.clear()
+    finally:
+        _unsubscribe_job_events(job_id, waker)
 
 
 def _format_outbound_event(ev: dict[str, Any]) -> str:

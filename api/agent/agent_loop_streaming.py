@@ -249,9 +249,16 @@ def _summarise_input(tool_name: str, input_data: dict[str, Any]) -> str:
         "Grep": "pattern",
         "Bash": "command",
     }
+    # File-ops keep the FULL path — frontend uses this verbatim as the
+    # ``data-filepath`` attribute on the clickable tool-block. Truncating it
+    # here breaks the file-preview click handler for long paths. CSS already
+    # handles visual overflow with ``text-overflow: ellipsis`` on .tool-args.
+    file_ops = {"Read", "Write", "Edit", "LS"}
     key = primary_keys.get(tool_name)
     if key and key in input_data:
         value = str(input_data[key])
+        if tool_name in file_ops:
+            return f"{tool_name}({value})"
         return f"{tool_name}({_truncate(value, 80)})"
     return f"{tool_name}(...)"
 

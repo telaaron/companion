@@ -38,7 +38,9 @@
 		preview = '';
 		previewLoading = true;
 		try {
-			const data = await api<{ content: string }>(`/v1/preview/file`, { query: { path: e.path } });
+			const data = await api<{ content: string }>(`/v1/preview/file`, {
+				query: { path: e.path, session_id: e.session_id || '' }
+			});
 			preview = data.content || '';
 		} catch (err) {
 			preview = `(unable to load preview: ${(err as Error).message})`;

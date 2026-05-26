@@ -796,6 +796,22 @@ def record_file_edit(
         logger.warning("FILE_EDIT: failed to record ({})", exc)
 
 
+def file_edit_for_path(path: str) -> dict[str, Any] | None:
+    """Return the most recent ``file_edits`` row for ``path`` or ``None``.
+
+    Used by the preview endpoint as a cross-project escape hatch: when the
+    agent already wrote to a file (and therefore audited it), we trust
+    that path for read-only preview even when it sits outside the
+    configured workspace root.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM file_edits WHERE path=? ORDER BY ts DESC LIMIT 1",
+            (path,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def list_file_edits(
     *, limit: int = 200, project_id: str | None = None
 ) -> list[dict[str, Any]]:

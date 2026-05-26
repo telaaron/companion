@@ -2116,14 +2116,46 @@ async def preview_file(
     if not path:
         raise HTTPException(400, "path is required")
 
-    workspace_root = settings.agent_default_workspace or os.getcwd()
+    # Resolve workspace in priority order so previews work for cross-project
+    # file-edit history:
+    #   1. explicit session_id -> session.project_id -> projects.workspace_path
+    #   2. settings.agent_default_workspace
+    #   3. process CWD
+    workspace_root: str | None = None
+    if session_id:
+        session = datastore.get_session(session_id)
+        if session and session.get("project_id"):
+            project = datastore.get_project(session["project_id"])
+            if project and project.get("workspace_path"):
+                workspace_root = project["workspace_path"]
+    if not workspace_root:
+        workspace_root = settings.agent_default_workspace or os.getcwd()
+
     workspace = Workspace.create(workspace_root, allow_outside_root=False)
 
     try:
         resolved = workspace.resolve(path)
     except WorkspaceViolation as exc:
-        logger.info("PREVIEW: path traversal blocked path={!r} reason={}", path, exc)
-        raise HTTPException(403, f"path outside workspace: {exc}") from exc
+        # Cross-project fallback: if the requested path exists on disk AND
+        # appears in the file_edits history, the agent already touched it
+        # so we trust it for read-only preview. This keeps File-edits
+        # useful when sessions touched paths outside the default workspace.
+        absolute = None
+        try:
+            absolute = Path(path).expanduser().resolve(strict=False)
+        except OSError:
+            absolute = None
+        if (
+            absolute is not None
+            and absolute.is_file()
+            and datastore.file_edit_for_path(str(absolute)) is not None
+        ):
+            resolved = absolute
+        else:
+            logger.info(
+                "PREVIEW: path traversal blocked path={!r} reason={}", path, exc
+            )
+            raise HTTPException(403, f"path outside workspace: {exc}") from exc
 
     if not resolved.is_file():
         raise HTTPException(404, "file not found")

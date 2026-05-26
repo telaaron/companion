@@ -18,18 +18,13 @@ function getBase(): string {
 
 export function getToken(): string {
 	if (typeof window === 'undefined') return '';
+	// Default to the dev-shipping token `freecc` if nothing is stored — the
+	// proxy ships with this token enabled out of the box. Users can override
+	// via the auth modal once we surface auth errors. No browser prompt() on
+	// first paint: it blocks rendering and looks like a phishing dialog.
 	let token = localStorage.getItem(TOKEN_KEY) || '';
 	if (!token) {
-		// Last resort prompt — used when localStorage is empty on first paint.
-		// Production flows should set this via the setup wizard or env vault.
-		const t = window.prompt(
-			'Enter Companion API token (ANTHROPIC_AUTH_TOKEN):',
-			'freecc'
-		);
-		if (t) {
-			localStorage.setItem(TOKEN_KEY, t);
-			token = t;
-		}
+		token = 'freecc';
 	}
 	return token;
 }

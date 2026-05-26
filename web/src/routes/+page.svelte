@@ -4,18 +4,20 @@
 	import { toasts } from '$lib/stores.svelte';
 	import type { Session, Message, Project, JobEvent } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
-	import { Plus, Send, Mic, RotateCcw, Trash2, Loader2 } from 'lucide-svelte';
+	import { Plus, Send, Mic, Trash2, Loader2 } from 'lucide-svelte';
 
 	let sessions = $state<Session[]>([]);
 	let projects = $state<Project[]>([]);
 	let activeSessionId = $state<string | null>(null);
+	let activeSession = $state<(Session & { messages?: Message[]; project_id?: string }) | null>(null);
 	let messages = $state<Message[]>([]);
 	let composer = $state('');
 	let streaming = $state(false);
 	let streamBuffer = $state('');
-	let messagesEl: HTMLDivElement | undefined;
+	let messagesEl: HTMLDivElement | undefined = $state();
 	let abortCtl: AbortController | null = null;
 	let voiceAvailable = $state(false);
+	let defaultModel = $state('deepseek/deepseek-v4-pro');
 
 	async function loadSessions() {
 		try {
@@ -38,6 +40,15 @@
 		}
 	}
 
+	async function loadDefaultModel() {
+		try {
+			const s = await api<{ model: string }>('/v1/settings');
+			if (s?.model) defaultModel = s.model;
+		} catch {
+			/* keep fallback */
+		}
+	}
+
 	async function checkVoice() {
 		try {
 			const v = await api<{ available: boolean }>('/v1/voice/status');
@@ -52,18 +63,22 @@
 		messages = [];
 		streamBuffer = '';
 		try {
-			const data = await api<{ messages: Message[] }>(`/v1/sessions/${id}/messages`);
+			const data = await api<Session & { messages?: Message[] }>(`/v1/sessions/${id}`);
+			activeSession = data;
 			messages = data.messages || [];
 			await tick();
 			scrollToBottom();
 		} catch (e) {
-			toasts.show(`Messages load failed: ${(e as Error).message}`, 'error');
+			toasts.show(`Session load failed: ${(e as Error).message}`, 'error');
 		}
 	}
 
 	async function newSession() {
 		try {
-			const s = await api<Session>('/v1/sessions', { method: 'POST', body: {} });
+			const s = await api<Session>('/v1/sessions', {
+				method: 'POST',
+				body: { title: 'New chat', model: defaultModel }
+			});
 			sessions = [s, ...sessions];
 			await selectSession(s.id);
 		} catch (e) {
@@ -79,11 +94,22 @@
 			if (activeSessionId === id) {
 				activeSessionId = sessions[0]?.id || null;
 				if (activeSessionId) await selectSession(activeSessionId);
-				else messages = [];
+				else {
+					messages = [];
+					activeSession = null;
+				}
 			}
 		} catch (e) {
 			toasts.show(`Delete failed: ${(e as Error).message}`, 'error');
 		}
+	}
+
+	function toAnthropicMessages(msgs: Message[], next: string): Array<{ role: string; content: string }> {
+		const out: Array<{ role: string; content: string }> = msgs
+			.filter((m) => m.role === 'user' || m.role === 'assistant')
+			.map((m) => ({ role: m.role, content: m.content || '' }));
+		out.push({ role: 'user', content: next });
+		return out;
 	}
 
 	async function send() {
@@ -96,23 +122,38 @@
 		composer = '';
 		streaming = true;
 		streamBuffer = '';
-		// optimistic user message
-		const userMsg: Message = {
+
+		// Optimistic user message — re-fetched authoritatively after job completes.
+		const optimistic: Message = {
 			id: `tmp-${Date.now()}`,
 			session_id: activeSessionId!,
 			role: 'user',
 			content: text,
 			created_at: new Date().toISOString()
 		};
-		messages = [...messages, userMsg];
+		messages = [...messages, optimistic];
 		await tick();
 		scrollToBottom();
 
 		try {
+			// 1. Persist user message in DB so it survives reloads.
+			await api(`/v1/sessions/${activeSessionId}/messages`, {
+				method: 'POST',
+				body: { role: 'user', content: text }
+			});
+
+			// 2. Start the agent job with the full conversation as Anthropic messages.
 			const job = await api<{ id: string }>(`/v1/sessions/${activeSessionId}/jobs`, {
 				method: 'POST',
-				body: { message: text }
+				body: {
+					model: activeSession?.model || defaultModel,
+					messages: toAnthropicMessages(messages.slice(0, -1), text),
+					max_tokens: 4096,
+					project_id: activeSession?.project_id || null
+				}
 			});
+
+			// 3. Stream SSE events into the buffer until the job completes.
 			abortCtl = new AbortController();
 			for await (const ev of sseStream<JobEvent>(`/v1/jobs/${job.id}/events`, abortCtl.signal)) {
 				if (ev.type === 'text_delta' && ev.delta) streamBuffer += ev.delta;
@@ -124,7 +165,8 @@
 				await tick();
 				scrollToBottom();
 			}
-			// Reload final assistant message from DB to get authoritative state.
+
+			// 4. Re-sync authoritative messages from the server.
 			await selectSession(activeSessionId!);
 		} catch (e) {
 			toasts.show(`Send failed: ${(e as Error).message}`, 'error');
@@ -141,16 +183,14 @@
 	}
 
 	function onKeyDown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && !e.shiftKey && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
-			if (e.key === 'Enter' && !e.shiftKey) {
-				e.preventDefault();
-				send();
-			}
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			send();
 		}
 	}
 
 	onMount(async () => {
-		await Promise.all([loadSessions(), loadProjects(), checkVoice()]);
+		await Promise.all([loadSessions(), loadProjects(), checkVoice(), loadDefaultModel()]);
 	});
 
 	function fmtTime(iso: string): string {
@@ -199,7 +239,7 @@
 	</aside>
 
 	<section class="chat-main">
-		<PageHeader title="Chat" sub={activeSessionId ? `Session ${activeSessionId.slice(0, 8)}` : 'Start a new chat'} />
+		<PageHeader title="Chat" sub={activeSession?.title || (activeSessionId ? `Session ${activeSessionId.slice(0, 8)}` : 'Start a new chat')} />
 
 		<div class="messages" bind:this={messagesEl}>
 			{#each messages as m (m.id)}
@@ -215,9 +255,17 @@
 				<article class="msg msg-assistant">
 					<header class="msg-header">
 						<span class="msg-role">assistant</span>
-						<Loader2 size={12} class="spin-icon" />
+						<Loader2 size={12} strokeWidth={2} class="spin-icon" />
 					</header>
 					<div class="msg-body">{streamBuffer}</div>
+				</article>
+			{:else if streaming}
+				<article class="msg msg-assistant">
+					<header class="msg-header">
+						<span class="msg-role">assistant</span>
+						<Loader2 size={12} strokeWidth={2} class="spin-icon" />
+					</header>
+					<div class="msg-body" style="color: var(--fg-muted)">…</div>
 				</article>
 			{/if}
 			{#if !streaming && messages.length === 0}
@@ -236,7 +284,7 @@
 			></textarea>
 			<div class="composer-actions">
 				{#if voiceAvailable}
-					<button class="btn btn-ghost" type="button" title="Voice input">
+					<button class="btn btn-ghost" type="button" title="Voice input" aria-label="Voice input">
 						<Mic size={14} strokeWidth={2} />
 					</button>
 				{/if}
@@ -259,12 +307,13 @@
 		border-right: 1px solid var(--border);
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
 	}
 	.sessions-header {
 		padding: var(--sp-3) var(--sp-4);
 		border-bottom: 1px solid var(--border);
 	}
-	.sessions-header .btn {
+	.sessions-header :global(.btn) {
 		width: 100%;
 		justify-content: center;
 	}

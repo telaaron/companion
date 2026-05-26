@@ -55,12 +55,12 @@ class CostStore {
 		this.loading = true;
 		try {
 			const { api } = await import('./api');
-			const data = await api<{
-				today_cost_usd?: number;
-				week_cost_usd?: number;
-			}>('/v1/usage');
-			this.today = data.today_cost_usd || 0;
-			this.week = data.week_cost_usd || 0;
+			const [today, week] = await Promise.all([
+				api<{ summary: { totals: { cost_usd: number } } }>('/v1/usage', { query: { range: '24h' } }),
+				api<{ summary: { totals: { cost_usd: number } } }>('/v1/usage', { query: { range: '7d' } })
+			]);
+			this.today = today?.summary?.totals?.cost_usd ?? 0;
+			this.week = week?.summary?.totals?.cost_usd ?? 0;
 		} catch {
 			/* silent */
 		} finally {

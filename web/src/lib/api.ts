@@ -108,13 +108,26 @@ function safeJson(text: string): unknown {
 }
 
 /**
- * SSE event stream. Yields parsed JSON payloads from a server-sent-events
- * endpoint. Pass an AbortSignal to stop the stream.
+ * Parsed SSE frame as emitted by the Anthropic proxy. Yields one frame
+ * per `event: ...\\ndata: ...\\n\\n` block, exposing both the event name
+ * and the parsed JSON payload so consumers can dispatch on either.
  */
-export async function* sseStream<T = unknown>(
+export interface SseFrame {
+	id?: string;
+	event?: string;
+	data: Record<string, unknown> | null;
+	raw: string;
+}
+
+/**
+ * SSE event stream. Reads `text/event-stream` and yields parsed frames.
+ * Heartbeat comments (`: heartbeat`) and empty payloads are skipped.
+ * Pass an AbortSignal to stop the stream early.
+ */
+export async function* sseStream(
 	path: string,
 	signal?: AbortSignal
-): AsyncGenerator<T, void, void> {
+): AsyncGenerator<SseFrame, void, void> {
 	const base = getBase();
 	const token = getToken();
 	const url = path.startsWith('http') ? path : base + path;
@@ -135,20 +148,28 @@ export async function* sseStream<T = unknown>(
 		const { done, value } = await reader.read();
 		if (done) break;
 		buf += decoder.decode(value, { stream: true });
-		const events = buf.split('\n\n');
-		buf = events.pop() || '';
-		for (const ev of events) {
-			const dataLine = ev
-				.split('\n')
-				.find((l) => l.startsWith('data:'));
-			if (!dataLine) continue;
-			const data = dataLine.slice(5).trim();
-			if (!data) continue;
-			try {
-				yield JSON.parse(data) as T;
-			} catch {
-				/* skip malformed */
+		// SSE frames are separated by a blank line. Split, keep the
+		// trailing partial frame in the buffer.
+		const frames = buf.split('\n\n');
+		buf = frames.pop() || '';
+		for (const raw of frames) {
+			if (!raw.trim() || raw.startsWith(':')) continue; // heartbeat / comment
+			const frame: SseFrame = { data: null, raw };
+			const dataParts: string[] = [];
+			for (const line of raw.split('\n')) {
+				if (line.startsWith('id:')) frame.id = line.slice(3).trim();
+				else if (line.startsWith('event:')) frame.event = line.slice(6).trim();
+				else if (line.startsWith('data:')) dataParts.push(line.slice(5).trim());
 			}
+			if (dataParts.length === 0) continue;
+			const dataStr = dataParts.join('\n');
+			try {
+				frame.data = JSON.parse(dataStr);
+			} catch {
+				// Allow non-JSON data through as a string under `__raw`.
+				frame.data = { __raw: dataStr } as unknown as Record<string, unknown>;
+			}
+			yield frame;
 		}
 	}
 }

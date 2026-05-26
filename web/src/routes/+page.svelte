@@ -2,7 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import { api, sseStream } from '$lib/api';
 	import { toasts } from '$lib/stores.svelte';
-	import type { Session, Message, Project, JobEvent } from '$lib/types';
+	import type { Session, Message, Project } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
 	import { Plus, Send, Mic, Trash2, Loader2 } from 'lucide-svelte';
 
@@ -154,16 +154,45 @@
 			});
 
 			// 3. Stream SSE events into the buffer until the job completes.
+			// The proxy passes through raw Anthropic-format SSE frames, plus
+			// synthetic lifecycle events (`job_status`, `error`) emitted by
+			// the job runner. We dispatch on either the SSE event name or the
+			// `type` field inside the JSON payload.
 			abortCtl = new AbortController();
-			for await (const ev of sseStream<JobEvent>(`/v1/jobs/${job.id}/events`, abortCtl.signal)) {
-				if (ev.type === 'text_delta' && ev.delta) streamBuffer += ev.delta;
-				else if (ev.type === 'job_complete') break;
-				else if (ev.type === 'error' && ev.error) {
-					toasts.show(ev.error, 'error');
-					break;
+			let done = false;
+			for await (const frame of sseStream(`/v1/jobs/${job.id}/events`, abortCtl.signal)) {
+				const data = frame.data ?? {};
+				const evName = frame.event;
+				const evType = (data as { type?: string }).type;
+
+				// Anthropic streaming: text deltas live under content_block_delta.
+				if (evName === 'content_block_delta' || evType === 'content_block_delta') {
+					const delta = (data as { delta?: { type?: string; text?: string } }).delta;
+					if (delta?.type === 'text_delta' && delta.text) {
+						streamBuffer += delta.text;
+					}
+				} else if (evName === 'message_stop' || evType === 'message_stop') {
+					// upstream model finished one message — keep listening for
+					// further turns or the job's lifecycle terminator.
+				} else if (
+					evName === 'job_finished' ||
+					evName === 'job_status' ||
+					evType === 'job_finished'
+				) {
+					const status = (data as { status?: string }).status;
+					if (status === 'error') toasts.show('Job failed', 'error');
+					done = true;
+				} else if (evName === 'error' || evType === 'error') {
+					const msg = (data as { error?: string; message?: string }).error || (data as { message?: string }).message;
+					if (msg) toasts.show(String(msg), 'error');
+					done = true;
 				}
-				await tick();
-				scrollToBottom();
+
+				if (streamBuffer) {
+					await tick();
+					scrollToBottom();
+				}
+				if (done) break;
 			}
 
 			// 4. Re-sync authoritative messages from the server.

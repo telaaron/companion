@@ -4,20 +4,27 @@
 	import { toasts } from '$lib/stores.svelte';
 	import type { Session, Message, Project } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
-	import { Plus, Send, Mic, Trash2, Loader2 } from 'lucide-svelte';
+	import Markdown from '$lib/Markdown.svelte';
+	import { Plus, Send, Mic, MicOff, Trash2, Loader2, RotateCcw, Copy, ChevronDown } from 'lucide-svelte';
 
 	let sessions = $state<Session[]>([]);
 	let projects = $state<Project[]>([]);
+	let upstreamModels = $state<string[]>([]);
 	let activeSessionId = $state<string | null>(null);
 	let activeSession = $state<(Session & { messages?: Message[]; project_id?: string }) | null>(null);
 	let messages = $state<Message[]>([]);
 	let composer = $state('');
 	let streaming = $state(false);
 	let streamBuffer = $state('');
+	let thinkingBuffer = $state('');
+	let showThinking = $state(false);
 	let messagesEl: HTMLDivElement | undefined = $state();
 	let abortCtl: AbortController | null = null;
 	let voiceAvailable = $state(false);
+	let voiceRecording = $state(false);
 	let defaultModel = $state('deepseek/deepseek-v4-pro');
+	let mediaRecorder: MediaRecorder | null = null;
+	let chunks: Blob[] = [];
 
 	async function loadSessions() {
 		try {
@@ -36,7 +43,27 @@
 			const data = await api<{ projects: Project[] }>('/v1/projects');
 			projects = data.projects || [];
 		} catch {
-			/* projects optional */
+			/* optional */
+		}
+	}
+
+	async function loadUpstreamModels() {
+		try {
+			const data = await api<{
+				providers?: Array<{ provider: string; models?: Array<{ id: string }> }>;
+				configured?: Array<{ provider: string; model: string }>;
+			}>('/v1/models/upstream');
+			const refs: string[] = [];
+			for (const p of data.providers || []) {
+				for (const m of p.models || []) refs.push(`${p.provider}/${m.id}`);
+			}
+			for (const c of data.configured || []) {
+				const ref = c.model.includes('/') ? c.model : `${c.provider}/${c.model}`;
+				if (!refs.includes(ref)) refs.push(ref);
+			}
+			upstreamModels = refs.sort();
+		} catch {
+			/* keep empty list */
 		}
 	}
 
@@ -62,6 +89,7 @@
 		activeSessionId = id;
 		messages = [];
 		streamBuffer = '';
+		thinkingBuffer = '';
 		try {
 			const data = await api<Session & { messages?: Message[] }>(`/v1/sessions/${id}`);
 			activeSession = data;
@@ -104,12 +132,124 @@
 		}
 	}
 
-	function toAnthropicMessages(msgs: Message[], next: string): Array<{ role: string; content: string }> {
+	async function updateSessionField(patch: Partial<Session> & { project_id?: string | null }) {
+		if (!activeSessionId || !activeSession) return;
+		const body = {
+			title: activeSession.title,
+			model: activeSession.model,
+			project_id: activeSession.project_id ?? null,
+			...patch
+		};
+		try {
+			const updated = await api<Session>(`/v1/sessions/${activeSessionId}`, {
+				method: 'PUT',
+				body
+			});
+			activeSession = { ...activeSession, ...updated };
+			sessions = sessions.map((s) => (s.id === activeSessionId ? { ...s, ...updated } : s));
+		} catch (e) {
+			toasts.show(`Update failed: ${(e as Error).message}`, 'error');
+		}
+	}
+
+	function toAnthropicMessages(msgs: Message[], next: string | null): Array<{ role: string; content: string }> {
 		const out: Array<{ role: string; content: string }> = msgs
 			.filter((m) => m.role === 'user' || m.role === 'assistant')
 			.map((m) => ({ role: m.role, content: m.content || '' }));
-		out.push({ role: 'user', content: next });
+		if (next != null) out.push({ role: 'user', content: next });
 		return out;
+	}
+
+	async function runJob(opts: { history: Message[]; nextUser: string | null }) {
+		if (!activeSessionId) return;
+		streaming = true;
+		streamBuffer = '';
+		thinkingBuffer = '';
+		try {
+			const job = await api<{ id: string }>(`/v1/sessions/${activeSessionId}/jobs`, {
+				method: 'POST',
+				body: {
+					model: activeSession?.model || defaultModel,
+					messages: toAnthropicMessages(opts.history, opts.nextUser),
+					max_tokens: 4096,
+					project_id: activeSession?.project_id || null
+				}
+			});
+
+			abortCtl = new AbortController();
+			let done = false;
+			for await (const frame of sseStream(`/v1/jobs/${job.id}/events`, abortCtl.signal)) {
+				const data = (frame.data ?? {}) as Record<string, unknown>;
+				const evName = frame.event;
+				const evType = data.type as string | undefined;
+
+				if (evName === 'content_block_delta' || evType === 'content_block_delta') {
+					const delta = data.delta as { type?: string; text?: string; thinking?: string } | undefined;
+					if (delta?.type === 'text_delta' && delta.text) streamBuffer += delta.text;
+					else if (delta?.type === 'thinking_delta' && delta.thinking) thinkingBuffer += delta.thinking;
+				} else if (
+					evName === 'job_finished' ||
+					evName === 'job_status' ||
+					evType === 'job_finished'
+				) {
+					const status = data.status as string | undefined;
+					if (status === 'error') toasts.show('Job failed', 'error');
+					done = true;
+				} else if (evName === 'error' || evType === 'error') {
+					const msg = (data.error || data.message) as string | undefined;
+					if (msg) toasts.show(String(msg), 'error');
+					done = true;
+				}
+
+				if (streamBuffer || thinkingBuffer) {
+					await tick();
+					scrollToBottom();
+				}
+				if (done) break;
+			}
+
+			if (streamBuffer.trim()) {
+				try {
+					await api(`/v1/sessions/${activeSessionId}/messages`, {
+						method: 'POST',
+						body: { role: 'assistant', content: streamBuffer }
+					});
+				} catch (e) {
+					console.warn('persist assistant message failed', e);
+				}
+				messages = [
+					...messages,
+					{
+						id: `local-${Date.now()}`,
+						session_id: activeSessionId!,
+						role: 'assistant',
+						content: streamBuffer,
+						created_at: new Date().toISOString()
+					}
+				];
+			}
+
+			// Auto-rename session on first turn if title is still default.
+			if ((activeSession?.title || '').match(/^(New chat|Untitled|)$/)) {
+				try {
+					await api(`/v1/sessions/${activeSessionId}/auto-rename`, { method: 'POST' });
+					const fresh = await api<Session>(`/v1/sessions/${activeSessionId}`);
+					if (fresh.title && activeSession) {
+						activeSession = { ...activeSession, title: fresh.title };
+						sessions = sessions.map((s) => (s.id === activeSessionId ? { ...s, title: fresh.title } : s));
+					}
+				} catch {
+					/* best effort */
+				}
+			}
+		} catch (e) {
+			toasts.show(`Send failed: ${(e as Error).message}`, 'error');
+		} finally {
+			streaming = false;
+			streamBuffer = '';
+			thinkingBuffer = '';
+			abortCtl = null;
+		}
 	}
 
 	async function send() {
@@ -120,10 +260,7 @@
 			if (!activeSessionId) return;
 		}
 		composer = '';
-		streaming = true;
-		streamBuffer = '';
 
-		// Optimistic user message — re-fetched authoritatively after job completes.
 		const optimistic: Message = {
 			id: `tmp-${Date.now()}`,
 			session_id: activeSessionId!,
@@ -136,99 +273,82 @@
 		scrollToBottom();
 
 		try {
-			// 1. Persist user message in DB so it survives reloads.
 			await api(`/v1/sessions/${activeSessionId}/messages`, {
 				method: 'POST',
 				body: { role: 'user', content: text }
 			});
-
-			// 2. Start the agent job with the full conversation as Anthropic messages.
-			const job = await api<{ id: string }>(`/v1/sessions/${activeSessionId}/jobs`, {
-				method: 'POST',
-				body: {
-					model: activeSession?.model || defaultModel,
-					messages: toAnthropicMessages(messages.slice(0, -1), text),
-					max_tokens: 4096,
-					project_id: activeSession?.project_id || null
-				}
-			});
-
-			// 3. Stream SSE events into the buffer until the job completes.
-			// The proxy passes through raw Anthropic-format SSE frames, plus
-			// synthetic lifecycle events (`job_status`, `error`) emitted by
-			// the job runner. We dispatch on either the SSE event name or the
-			// `type` field inside the JSON payload.
-			abortCtl = new AbortController();
-			let done = false;
-			for await (const frame of sseStream(`/v1/jobs/${job.id}/events`, abortCtl.signal)) {
-				const data = frame.data ?? {};
-				const evName = frame.event;
-				const evType = (data as { type?: string }).type;
-
-				// Anthropic streaming: text deltas live under content_block_delta.
-				if (evName === 'content_block_delta' || evType === 'content_block_delta') {
-					const delta = (data as { delta?: { type?: string; text?: string } }).delta;
-					if (delta?.type === 'text_delta' && delta.text) {
-						streamBuffer += delta.text;
-					}
-				} else if (evName === 'message_stop' || evType === 'message_stop') {
-					// upstream model finished one message — keep listening for
-					// further turns or the job's lifecycle terminator.
-				} else if (
-					evName === 'job_finished' ||
-					evName === 'job_status' ||
-					evType === 'job_finished'
-				) {
-					const status = (data as { status?: string }).status;
-					if (status === 'error') toasts.show('Job failed', 'error');
-					done = true;
-				} else if (evName === 'error' || evType === 'error') {
-					const msg = (data as { error?: string; message?: string }).error || (data as { message?: string }).message;
-					if (msg) toasts.show(String(msg), 'error');
-					done = true;
-				}
-
-				if (streamBuffer) {
-					await tick();
-					scrollToBottom();
-				}
-				if (done) break;
-			}
-
-			// 4. Persist the final assistant message — the agent-job runner
-			// only stores SSE events, not assembled assistant turns, so we
-			// have to write it back ourselves before the next reload would
-			// otherwise show only the user message.
-			if (streamBuffer.trim()) {
-				try {
-					await api(`/v1/sessions/${activeSessionId}/messages`, {
-						method: 'POST',
-						body: { role: 'assistant', content: streamBuffer }
-					});
-				} catch (e) {
-					// Fall through — the message is still in memory below.
-					console.warn('persist assistant message failed', e);
-				}
-				// Replace the in-memory buffer with a permanent message so
-				// the optimistic streaming bubble stays put after reload.
-				messages = [
-					...messages,
-					{
-						id: `local-${Date.now()}`,
-						session_id: activeSessionId!,
-						role: 'assistant',
-						content: streamBuffer,
-						created_at: new Date().toISOString()
-					}
-				];
-			}
 		} catch (e) {
-			toasts.show(`Send failed: ${(e as Error).message}`, 'error');
-		} finally {
-			streaming = false;
-			streamBuffer = '';
-			abortCtl = null;
+			toasts.show(`Persist failed: ${(e as Error).message}`, 'error');
 		}
+
+		await runJob({ history: messages.slice(0, -1), nextUser: text });
+	}
+
+	async function regenerate(msgId: string) {
+		if (streaming) return;
+		const idx = messages.findIndex((m) => m.id === msgId);
+		if (idx < 0) return;
+		const m = messages[idx];
+		if (m.role !== 'assistant') return;
+		// Find the user message that triggered this assistant turn.
+		let userIdx = idx - 1;
+		while (userIdx >= 0 && messages[userIdx].role !== 'user') userIdx--;
+		if (userIdx < 0) return;
+		const userText = messages[userIdx].content;
+
+		// Delete the assistant message we're replacing.
+		try {
+			await api(`/v1/sessions/${activeSessionId}/messages/${msgId}`, { method: 'DELETE' });
+		} catch {
+			/* tolerate — may be a local-only id */
+		}
+		messages = messages.slice(0, idx);
+		await runJob({ history: messages.slice(0, userIdx), nextUser: userText });
+	}
+
+	function copyMessage(content: string) {
+		navigator.clipboard.writeText(content);
+		toasts.show('Copied', 'ok');
+	}
+
+	async function startVoice() {
+		try {
+			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			chunks = [];
+			mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+			mediaRecorder.ondataavailable = (e) => {
+				if (e.data.size > 0) chunks.push(e.data);
+			};
+			mediaRecorder.onstop = async () => {
+				stream.getTracks().forEach((t) => t.stop());
+				const blob = new Blob(chunks, { type: 'audio/webm' });
+				const form = new FormData();
+				form.append('audio', blob, 'voice.webm');
+				try {
+					const data = await api<{ text: string }>('/v1/transcribe', {
+						method: 'POST',
+						body: form
+					});
+					if (data?.text) {
+						composer = composer ? `${composer} ${data.text}` : data.text;
+						toasts.show('Transcribed', 'ok');
+					}
+				} catch (e) {
+					toasts.show(`Transcribe failed: ${(e as Error).message}`, 'error');
+				}
+			};
+			mediaRecorder.start();
+			voiceRecording = true;
+		} catch (e) {
+			toasts.show(`Mic blocked: ${(e as Error).message}`, 'error');
+		}
+	}
+
+	function stopVoice() {
+		if (mediaRecorder && voiceRecording) {
+			mediaRecorder.stop();
+		}
+		voiceRecording = false;
 	}
 
 	function scrollToBottom() {
@@ -244,7 +364,7 @@
 	}
 
 	onMount(async () => {
-		await Promise.all([loadSessions(), loadProjects(), checkVoice(), loadDefaultModel()]);
+		await Promise.all([loadSessions(), loadProjects(), checkVoice(), loadDefaultModel(), loadUpstreamModels()]);
 	});
 
 	function fmtTime(iso: string): string {
@@ -275,9 +395,6 @@
 					onkeydown={(e) => { if (e.key === 'Enter') selectSession(s.id); }}
 				>
 					<div class="session-title">{s.title || 'Untitled'}</div>
-					{#if s.message_count}
-						<span class="pill">{s.message_count}</span>
-					{/if}
 					<button class="btn btn-ghost btn-icon" type="button" onclick={(e) => {
 						e.stopPropagation();
 						deleteSession(s.id);
@@ -293,35 +410,95 @@
 	</aside>
 
 	<section class="chat-main">
-		<PageHeader title="Chat" sub={activeSession?.title || (activeSessionId ? `Session ${activeSessionId.slice(0, 8)}` : 'Start a new chat')} />
+		<header class="chat-header">
+			<div class="row gap-3 align-center" style="flex: 1; min-width: 0">
+				<h2 class="chat-title">{activeSession?.title || 'Chat'}</h2>
+			</div>
+			{#if activeSessionId && activeSession}
+				<div class="row gap-2 align-center">
+					<label class="picker-label">
+						<span>Project</span>
+						<select
+							class="form-select"
+							value={activeSession.project_id || ''}
+							onchange={(e) => updateSessionField({ project_id: (e.currentTarget as HTMLSelectElement).value || null })}
+						>
+							<option value="">— None —</option>
+							{#each projects as p (p.id)}
+								<option value={p.id}>{p.name}</option>
+							{/each}
+						</select>
+					</label>
+					<label class="picker-label">
+						<span>Model</span>
+						<select
+							class="form-select"
+							value={activeSession.model || defaultModel}
+							onchange={(e) => updateSessionField({ model: (e.currentTarget as HTMLSelectElement).value })}
+						>
+							{#if !upstreamModels.includes(activeSession.model || defaultModel)}
+								<option value={activeSession.model || defaultModel}>{activeSession.model || defaultModel}</option>
+							{/if}
+							{#each upstreamModels as m (m)}
+								<option value={m}>{m}</option>
+							{/each}
+						</select>
+					</label>
+				</div>
+			{/if}
+		</header>
 
 		<div class="messages" bind:this={messagesEl}>
 			{#each messages as m (m.id)}
 				<article class="msg msg-{m.role}">
 					<header class="msg-header">
 						<span class="msg-role">{m.role}</span>
-						<span class="msg-time">{fmtTime(m.created_at)}</span>
+						<div class="row gap-2 align-center">
+							<span class="msg-time">{fmtTime(m.created_at)}</span>
+							<button class="btn btn-ghost btn-icon" type="button" onclick={() => copyMessage(m.content)} title="Copy" aria-label="Copy"><Copy size={12} strokeWidth={2} /></button>
+							{#if m.role === 'assistant'}
+								<button class="btn btn-ghost btn-icon" type="button" onclick={() => regenerate(m.id)} title="Regenerate" aria-label="Regenerate" disabled={streaming}>
+									<RotateCcw size={12} strokeWidth={2} />
+								</button>
+							{/if}
+						</div>
 					</header>
-					<div class="msg-body">{m.content}</div>
+					<div class="msg-body">
+						{#if m.role === 'assistant'}
+							<Markdown content={m.content} />
+						{:else}
+							{m.content}
+						{/if}
+					</div>
 				</article>
 			{/each}
-			{#if streaming && streamBuffer}
+
+			{#if streaming}
+				{#if thinkingBuffer}
+					<details class="thinking-block" open={showThinking}>
+						<summary>
+							<Loader2 size={12} strokeWidth={2} class="spin-icon" />
+							Thinking…
+							<ChevronDown size={12} strokeWidth={2} />
+						</summary>
+						<div class="thinking-body">{thinkingBuffer}</div>
+					</details>
+				{/if}
 				<article class="msg msg-assistant">
 					<header class="msg-header">
 						<span class="msg-role">assistant</span>
 						<Loader2 size={12} strokeWidth={2} class="spin-icon" />
 					</header>
-					<div class="msg-body">{streamBuffer}</div>
-				</article>
-			{:else if streaming}
-				<article class="msg msg-assistant">
-					<header class="msg-header">
-						<span class="msg-role">assistant</span>
-						<Loader2 size={12} strokeWidth={2} class="spin-icon" />
-					</header>
-					<div class="msg-body" style="color: var(--fg-muted)">…</div>
+					<div class="msg-body">
+						{#if streamBuffer}
+							<Markdown content={streamBuffer} />
+						{:else}
+							<span style="color: var(--fg-muted)">…</span>
+						{/if}
+					</div>
 				</article>
 			{/if}
+
 			{#if !streaming && messages.length === 0}
 				<div class="empty">Send a message to start.</div>
 			{/if}
@@ -338,9 +515,16 @@
 			></textarea>
 			<div class="composer-actions">
 				{#if voiceAvailable}
-					<button class="btn btn-ghost" type="button" title="Voice input" aria-label="Voice input">
-						<Mic size={14} strokeWidth={2} />
-					</button>
+					{#if voiceRecording}
+						<button class="btn btn-ghost recording" type="button" onclick={stopVoice} title="Stop recording" aria-label="Stop">
+							<MicOff size={14} strokeWidth={2} />
+							Stop
+						</button>
+					{:else}
+						<button class="btn btn-ghost" type="button" onclick={startVoice} title="Voice input" aria-label="Voice">
+							<Mic size={14} strokeWidth={2} />
+						</button>
+					{/if}
 				{/if}
 				<button class="btn btn-primary" type="button" disabled={streaming || !composer.trim()} onclick={send}>
 					<Send size={14} strokeWidth={2} />
@@ -382,8 +566,6 @@
 		gap: var(--sp-2);
 		padding: 8px 10px;
 		border-radius: var(--radius);
-		background: transparent;
-		border: none;
 		color: var(--fg);
 		font-size: var(--fs-13);
 		cursor: pointer;
@@ -408,6 +590,34 @@
 		min-width: 0;
 		height: 100vh;
 	}
+	.chat-header {
+		display: flex;
+		gap: var(--sp-4);
+		align-items: center;
+		padding: var(--sp-3) var(--sp-5);
+		border-bottom: 1px solid var(--border);
+		background: var(--bg);
+	}
+	.chat-title {
+		font-size: var(--fs-18);
+		font-weight: 600;
+		margin: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.picker-label {
+		display: flex;
+		flex-direction: column;
+		font-size: 11px;
+		color: var(--fg-muted);
+		gap: 2px;
+	}
+	.picker-label .form-select {
+		min-width: 160px;
+		font-size: 12px;
+		padding: 4px 6px;
+	}
 	.messages {
 		flex: 1;
 		overflow-y: auto;
@@ -427,6 +637,7 @@
 	.msg-user {
 		align-self: flex-end;
 		background: var(--bg-active);
+		white-space: pre-wrap;
 	}
 	.msg-assistant {
 		align-self: flex-start;
@@ -434,18 +645,43 @@
 	.msg-header {
 		display: flex;
 		justify-content: space-between;
+		align-items: center;
 		font-size: var(--fs-12);
 		color: var(--fg-muted);
-		margin-bottom: 4px;
+		margin-bottom: 6px;
 	}
 	.msg-role {
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 	}
 	.msg-body {
-		white-space: pre-wrap;
 		word-wrap: break-word;
 		line-height: 1.6;
+	}
+	.msg-user .msg-body {
+		white-space: pre-wrap;
+	}
+	.thinking-block {
+		max-width: 760px;
+		align-self: flex-start;
+		background: var(--bg-input);
+		border: 1px dashed var(--border);
+		border-radius: var(--radius);
+		padding: 6px 12px;
+		font-size: 12px;
+		color: var(--fg-muted);
+	}
+	.thinking-block summary {
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.thinking-body {
+		white-space: pre-wrap;
+		font-family: ui-monospace, monospace;
+		font-size: 11px;
+		margin-top: 6px;
 	}
 	.composer {
 		border-top: 1px solid var(--border);
@@ -460,7 +696,15 @@
 		justify-content: flex-end;
 		gap: var(--sp-2);
 	}
+	.recording {
+		color: var(--error);
+		animation: pulse 1.4s ease-in-out infinite;
+	}
 	:global(.spin-icon) {
 		animation: spin 0.8s linear infinite;
+	}
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.5; }
 	}
 </style>

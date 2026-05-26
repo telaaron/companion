@@ -127,6 +127,42 @@ def create_app(*, lifespan_enabled: bool = True) -> FastAPI:
             response = await call_next(request)
         return response
 
+    @app.middleware("http")
+    async def no_cache_for_ui_html(request: Request, call_next):
+        """Strip caching from SvelteKit's HTML entry points.
+
+        Content-hashed bundles under ``/ui/_app/immutable/`` stay cacheable.
+        But the HTML at ``/ui/`` and ``/ui/<route>`` references the
+        *current* bundle hashes — if it stays cached, browsers keep
+        loading yesterday's chunks and users see a stale UI after a
+        redeploy even with a hard reload.
+        """
+        response = await call_next(request)
+        path = request.url.path
+        # Only target HTML responses under /ui (entry + SPA deep links).
+        if path.startswith("/ui") and "/_app/" not in path:
+            last = path.rsplit("/", 1)[-1]
+            is_html_like = (
+                last == ""  # /ui/
+                or last == "ui"  # /ui exact
+                or last.endswith(".html")
+                or "." not in last  # /ui/settings, /ui/projects, ...
+            )
+            if is_html_like:
+                response.headers["Cache-Control"] = (
+                    "no-store, no-cache, must-revalidate, max-age=0"
+                )
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+                # Strip 304-eligible validators so the browser cannot
+                # short-circuit and serve a stale cached body.
+                # MutableHeaders supports `del`, not `.pop()`.
+                if "etag" in response.headers:
+                    del response.headers["etag"]
+                if "last-modified" in response.headers:
+                    del response.headers["last-modified"]
+        return response
+
     # Register routes
     app.include_router(admin_router)
     app.include_router(router)
@@ -141,6 +177,7 @@ def create_app(*, lifespan_enabled: bool = True) -> FastAPI:
         from fastapi.responses import FileResponse
 
         _index_html = _ui_dir / "index.html"
+
         app.mount(
             "/ui",
             StaticFiles(directory=str(_ui_dir), html=True),
@@ -160,11 +197,19 @@ def create_app(*, lifespan_enabled: bool = True) -> FastAPI:
         # that aren't a real file under the mount.
         if _ui_dir is _UI_SVELTE_DIR and _index_html.is_file():
             from starlette.exceptions import HTTPException as _StarletteHTTPException
+            from starlette.responses import Response
 
             @app.exception_handler(404)
-            async def _spa_fallback(request, exc):  # type: ignore[no-untyped-def]
+            async def _spa_fallback(request: Request, exc: Exception) -> Response:
                 if request.url.path.startswith("/ui/"):
-                    return FileResponse(str(_index_html))
+                    return FileResponse(
+                        str(_index_html),
+                        headers={
+                            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                            "Pragma": "no-cache",
+                            "Expires": "0",
+                        },
+                    )
                 # Preserve default 404 behavior for everything else.
                 if isinstance(exc, _StarletteHTTPException):
                     return JSONResponse(

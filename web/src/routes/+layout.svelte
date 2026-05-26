@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { base } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { theme, toasts, cost, health } from '$lib/stores.svelte';
 	import {
@@ -48,8 +49,9 @@
 
 	function isActive(href: string): boolean {
 		const path = page.url.pathname;
-		if (href === '/') return path === '/';
-		return path === href || path.startsWith(href + '/');
+		const full = base + (href === '/' ? '' : href);
+		if (href === '/') return path === base + '/' || path === base || path === '/';
+		return path === full || path.startsWith(full + '/');
 	}
 </script>
 
@@ -68,7 +70,7 @@
 				<a
 					class="nav-item"
 					class:active={isActive(item.href)}
-					href={item.href}
+					href={item.href === '/' ? base + '/' : base + item.href}
 					data-sveltekit-preload-data="hover"
 				>
 					<Icon size={16} strokeWidth={2} />

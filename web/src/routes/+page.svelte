@@ -195,8 +195,33 @@
 				if (done) break;
 			}
 
-			// 4. Re-sync authoritative messages from the server.
-			await selectSession(activeSessionId!);
+			// 4. Persist the final assistant message — the agent-job runner
+			// only stores SSE events, not assembled assistant turns, so we
+			// have to write it back ourselves before the next reload would
+			// otherwise show only the user message.
+			if (streamBuffer.trim()) {
+				try {
+					await api(`/v1/sessions/${activeSessionId}/messages`, {
+						method: 'POST',
+						body: { role: 'assistant', content: streamBuffer }
+					});
+				} catch (e) {
+					// Fall through — the message is still in memory below.
+					console.warn('persist assistant message failed', e);
+				}
+				// Replace the in-memory buffer with a permanent message so
+				// the optimistic streaming bubble stays put after reload.
+				messages = [
+					...messages,
+					{
+						id: `local-${Date.now()}`,
+						session_id: activeSessionId!,
+						role: 'assistant',
+						content: streamBuffer,
+						created_at: new Date().toISOString()
+					}
+				];
+			}
 		} catch (e) {
 			toasts.show(`Send failed: ${(e as Error).message}`, 'error');
 		} finally {

@@ -164,7 +164,9 @@ jobs:
           # Without these, createUpdaterArtifacts emits unsigned bundles
           # and the desktop client refuses to install them.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Empty default lets the unprotected dev key sign without
+          # tauri-cli prompting on a non-interactive runner.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           APPLE_SIGNING_IDENTITY: ""
 
       - name: Upload Tauri bundle (installer)

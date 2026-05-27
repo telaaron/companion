@@ -72,7 +72,12 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           chmod +x packaging/dist/companion-bin
-          ./packaging/dist/companion-bin --help 2>&1 | head -3 || true
+          # The binary boots the full FastAPI server when invoked with
+          # no args (no --help flag). Wrap in `timeout` so it exits
+          # cleanly after we've confirmed it starts; suppress non-zero
+          # exit caused by the SIGTERM.
+          timeout 8 ./packaging/dist/companion-bin > /tmp/smoke.log 2>&1 || true
+          head -20 /tmp/smoke.log
           file packaging/dist/companion-bin
 
       - name: Upload Python binary artifact

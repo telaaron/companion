@@ -36,9 +36,22 @@ datas: list[tuple[str, str]] = [
 # Modern SvelteKit build, if present. Mounted in preference to the legacy
 # vanilla ui_static bundle by ``api/app.py`` so the frozen binary serves
 # the new UI when web/build is produced before the PyInstaller run.
+#
+# Why we walk + emit per-file tuples instead of using the simpler
+# ``(src_dir, dst_dir)`` form: PyInstaller's directory-copy path treats
+# certain sub-directory names (notably ``entry`` and ``__pycache__``)
+# as internal and silently drops them, which leaves SvelteKit's
+# ``_app/immutable/entry/*.js`` missing from the bundle. Explicit file
+# tuples bypass that filter entirely.
 _svelte_build = REPO / "web" / "build"
 if _svelte_build.is_dir():
-    datas.append((str(_svelte_build), "web/build"))
+    for fpath in _svelte_build.rglob("*"):
+        if not fpath.is_file():
+            continue
+        rel = fpath.relative_to(_svelte_build)
+        # PyInstaller wants the destination dir, NOT the destination file.
+        dst_dir = ("web/build" / rel.parent).as_posix()
+        datas.append((str(fpath), dst_dir))
 
 # Pull in tiktoken's bundled BPE encoder files — required for token counts.
 datas += collect_data_files("tiktoken")

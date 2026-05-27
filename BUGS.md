@@ -28,7 +28,7 @@ _(none — alle bekannten Bugs gefixt 2026-05-25)_
 ## Gefixte Bugs
 
 ### BUG-F10: Voice-Button — Transkript erscheint nicht (ohne Whisper)
-**Status**: gefixt (uncommitted, 2026-05-25)
+**Status**: gefixt (2026-05-25, commit `40613e4`)
 **Root cause**: Mic-Button war immer aktiv, auch wenn `WHISPER_BINARY` ungesetzt + `WHISPER_DEVICE=cpu` (= keine Backend-Konfiguration). User klickte, sprach, bekam 503 mit zerfasertem `detail`-String den der toast halbwegs zeigte — aber kein Hinweis dass der Backend gar nicht erst aufzurufen ist.
 **Fix**:
 - Neuer Endpoint `GET /v1/voice/status` → `{available, backend, reason}`. Frontend probiert das einmal beim Mic-Button-Bau (caching: ein Probe pro Page-Load).
@@ -39,7 +39,7 @@ _(none — alle bekannten Bugs gefixt 2026-05-25)_
 ---
 
 ### BUG-F11: Tool-Blocks nicht klickbar bei langen Pfaden
-**Status**: gefixt (uncommitted, 2026-05-25)
+**Status**: gefixt (2026-05-25, commit `c543914`)
 **Root cause**: `api/agent/agent_loop_streaming.py::_summarise_input` truncated ALLE Tool-Args bei >80 Zeichen mit `…`. Für File-Ops (`Read`/`Write`/`Edit`/`LS`) landete der truncated Pfad im `data-filepath`-Attribut des UI Tool-Blocks. Klick öffnete dann `openPreviewPanel("/Users/aaron/Dateien - Lo…")` → 404. Bei kurzen Pfaden funktionierte alles, weshalb der Bug nur bei tief-genesteten Projekten auftrat.
 **Fix**: File-Ops behalten den vollen Pfad. CSS macht ohnehin `text-overflow: ellipsis` auf `.tool-args` — Display-Truncation gehört nicht in Backend-Daten.
 **Files**: `api/agent/agent_loop_streaming.py`, `tests/api/test_agent_loop_streaming.py` (+2 Regression-Tests: Format matched JS regex, lange Pfade werden 1:1 emittiert).
@@ -47,16 +47,15 @@ _(none — alle bekannten Bugs gefixt 2026-05-25)_
 ---
 
 ### BUG-F12: Projekt-Kontext fehlt beim Datei-Zugriff (Workspace-Resolver)
-**Status**: gefixt (uncommitted, 2026-05-25) — Code-Path war schon in BUG-F07 fix korrekt; jetzt mit Test-Suite abgesichert.
+**Status**: gefixt (2026-05-25, commit `c543914`) — Code-Path war schon in BUG-F07 fix korrekt; jetzt mit Test-Suite abgesichert.
 **Root cause**: `api/agent/jobs.py::_run_job` injizierte `payload["metadata"]["workspace_path"]` aus dem Projekt nur wenn `setdefault` nicht durch existing-key ueberschrieben wurde. Funktional korrekt — aber ungetestet, daher Regression-Risiko bei Refactor.
 **Fix**: Vollständige Test-Suite für `workspace_resolver.py` mit allen 5 Prioritätsstufen (explicit metadata > project_id → DB lookup > per-user env > global default > CWD). 6 Tests inkl. edge cases (vanished project_id, empty workspace_path).
 **Files**: `tests/api/test_workspace_resolver.py` (neu, 6 Tests).
-**Folgeaktion fuer Aaron**: Companion-Projekt in der UI hat noch `workspace_path = ~/companion` (stale). Im UI auf `~/Dateien - Local/companion` umstellen, sonst loesen File-Tools relative Pfade falsch auf.
 
 ---
 
 ### BUG-F08: Tauri-Desktop-App + GitHub-Download fehlten
-**Status**: gefixt (uncommitted, 2026-05-24)
+**Status**: gefixt (2026-05-24, commit `185cbec`)
 **Symptom**: Companion war nur als Source-Install ueber `uv run companion-server` verfuegbar. Aaron wollte normalen Programm-Download per GitHub Release (dmg/exe/AppImage).
 **Loesung**: Full v1 Tauri-Bundle umgesetzt — siehe `docs/agent-prompts/09-tauri-wrap.md`. Konkret:
 - `tauri/src-tauri/` (Tauri 2.x, Rust) — spawnt companion-bin on launch, wartet 5s auf Port 8082, tray icon mit Start/Stop/Open/Quit, hide-statt-close.
@@ -66,7 +65,7 @@ _(none — alle bekannten Bugs gefixt 2026-05-25)_
 **Acceptance**: Local `cargo tauri build --debug` produziert `Companion.app` + `Companion_1.0.0_aarch64.dmg`. Push eines `v*.*.*` tags loest CI-Build aller drei OS-Bundles aus + Release-Erstellung.
 
 ### BUG-F09: "free-claude-code" Branding weg, alles auf "companion"
-**Status**: gefixt (uncommitted, 2026-05-24)
+**Status**: gefixt (2026-05-24, commit `185cbec`)
 **Symptom**: Repo hieß intern noch `free-claude-code` (pyproject `name`, CLI scripts `fcc-server`/`fcc-init`/`fcc-claude`, Paths `~/.config/free-claude-code/`, `~/.cache/free-claude-code/`, User-Agent, UI-Titel, Wizard).
 **Fix**:
 - pyproject `name = "companion"`, scripts neu: `companion`, `companion-server`, `companion-init`, `companion-claude`, `ds`. Legacy-Aliase (`fcc-server`, `free-claude-code`, `fcc-init`, `fcc-claude`) **entfernt**.
@@ -80,16 +79,15 @@ _(none — alle bekannten Bugs gefixt 2026-05-25)_
 **Verification**: alle 5 Gates gruen (1786 Tests), grep-gate `# type: ignore|# ty: ignore` rein 0 hits.
 
 ### BUG-F07: Modell weiss nicht in welchem Projekt es ist
-**Status**: gefixt (uncommitted, 2026-05-24)
+**Status**: gefixt (2026-05-24, commit `a1bdae7`)
 **Symptom**: User fragt "welches Projekt ist mit diesem Chat verknuepft?" -> Agent antwortet "kein Projekt verknuepft", auch wenn `session.project_id` korrekt gesetzt ist und Sidebar das Projekt anzeigt.
 **Root cause**: `api/agent/jobs.py::_run_job` hat NUR den user-supplied `shared_context` und Pinned-Memories in den System-Prompt injiziert. Wenn `shared_context` leer war (Default fuer neue Projekte), bekam das Modell null Signal dass ueberhaupt ein Projekt verknuepft ist — kein Name, keine ID, kein Workspace.
 **Fix**: Bei gesetztem `project_id` immer einen "Project header"-Block voranstellen mit `Project name`, `Project ID`, `Workspace path`, optional `Project description`. Funktioniert auch ohne `shared_context`. Pinned-Memories und Brief werden weiterhin angefuegt.
 **Files**: `api/agent/jobs.py`, `tests/api/test_pinned_memories.py` (Assertions auf neuen Header, mock-router auf Echo-Pattern angeglichen damit pre-routing injection in `run_agent_streaming` ankommt).
 **Verification**: `uv run ruff format --check && uv run ruff check && uv run ty check && uv run pytest -q` -> 1786 passed.
-**Folgeaktion fuer Aaron**: Companion-Projekt im UI hat laut Chat `workspace_path = ~/companion` (stale). Sollte auf `~/Dateien - Local/companion` umgesetzt werden, sonst loesen File-Tools relative Pfade falsch auf (siehe auch BUG-002).
 
 ### BUG-F06: 2. paralleler Chat friert UI ein, Server antwortet nicht mehr
-**Status**: gefixt (uncommitted, 2026-05-24)
+**Status**: gefixt (2026-05-24, commit `a1bdae7`)
 **Symptom**: 1 Chat laufend = OK. 2. Session im selben Tab starten waehrend 1. noch streamt -> UI friert komplett ein, Reload laedt endlos, Server-Terminal komplett still, keine Exception.
 **Root cause**: `api/agent/jobs.py::_run_job` und `event_stream` riefen `datastore.*` (sync `sqlite3`) DIREKT im asyncio-Event-Loop auf. SQLite hat WAL aber Writes serialisieren; `timeout=10s` busy-wartet im C-Frame -> blockiert Loop -> keine andere Coroutine laeuft (auch nicht der Static-File-Handler fuer Reload). Zwei parallele Jobs schreiben hunderte SSE-Chunks/sec -> Schreib-Lock-Sturm -> Wedge.
 **Fix**: Alle hot-path `datastore.*` Calls in `_run_job` + `event_stream` + `_record_job_usage` + `_maybe_notify` ueber `asyncio.to_thread(...)` in den Thread-Pool. Reihenfolge im Job-Lifecycle korrigiert: `mark_agent_job_status(terminal)` jetzt LETZTER persistierter Step, damit Status-Polling die "alles persisted"-Invariante bekommt.

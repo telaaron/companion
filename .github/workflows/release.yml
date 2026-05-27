@@ -76,7 +76,7 @@ jobs:
           file packaging/dist/companion-bin
 
       - name: Upload Python binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-binary-${{ matrix.target }}
           path: packaging/dist/${{ matrix.artifact }}
@@ -168,7 +168,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ""
 
       - name: Upload Tauri bundle (installer)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Companion-${{ github.ref_name }}-${{ matrix.target }}
           path: |
@@ -179,7 +179,7 @@ jobs:
         # The updater pulls these — not the installer — so we publish them
         # alongside the human-downloadable bundles. Glob is permissive so
         # both macOS (.app.tar.gz) and Windows / Linux variants come through.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Companion-updater-${{ github.ref_name }}-${{ matrix.target }}
           path: |

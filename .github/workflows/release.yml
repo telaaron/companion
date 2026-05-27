@@ -45,6 +45,21 @@ jobs:
         # not required for the bundled binary.
         run: uv sync --dev
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build SvelteKit UI
+        # PyInstaller bundles web/build into the frozen binary so the
+        # bundled app serves the modern UI. Must run before PyInstaller.
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
       - name: Build Python binary
         run: |
           uv run pyinstaller packaging/companion-bin.spec \
@@ -122,6 +137,21 @@ jobs:
         if: runner.os != 'Windows'
         run: chmod +x packaging/dist/companion-bin
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+
+      - name: Build SvelteKit UI
+        working-directory: web
+        run: npm run build
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
@@ -129,16 +159,38 @@ jobs:
         working-directory: tauri/src-tauri
         run: cargo tauri build --target ${{ matrix.target }}
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          # Auto-updater signing — TAURI_SIGNING_PRIVATE_KEY is set as a
+          # repo secret; the matching public key lives in tauri.conf.json.
+          # Without these, createUpdaterArtifacts emits unsigned bundles
+          # and the desktop client refuses to install them.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ""
 
-      - name: Upload Tauri bundle
+      - name: Upload Tauri bundle (installer)
         uses: actions/upload-artifact@v4
         with:
           name: Companion-${{ github.ref_name }}-${{ matrix.target }}
           path: |
             tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.${{ matrix.bundle-ext }}
           if-no-files-found: error
+
+      - name: Upload updater artifacts (signed .tar.gz + .sig)
+        # The updater pulls these — not the installer — so we publish them
+        # alongside the human-downloadable bundles. Glob is permissive so
+        # both macOS (.app.tar.gz) and Windows / Linux variants come through.
+        uses: actions/upload-artifact@v4
+        with:
+          name: Companion-updater-${{ github.ref_name }}-${{ matrix.target }}
+          path: |
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.tar.gz
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.tar.gz.sig
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.zip
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.zip.sig
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage.sig
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.nsis.zip
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.nsis.zip.sig
+          if-no-files-found: warn
 
   release:
     name: GitHub Release
@@ -153,6 +205,18 @@ jobs:
           pattern: "Companion-*"
           path: dist
           merge-multiple: true
+
+      - name: Generate updater latest.json manifest
+        # The Tauri auto-updater fetches this manifest first to learn the
+        # current version + platform-specific download URL + signature.
+        # Each `.sig` next to a packaged bundle becomes a platform entry.
+        run: |
+          python3 .github/scripts/build_latest_json.py \
+            --version "${GITHUB_REF_NAME#v}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --bundles-dir dist \
+            --output dist/latest.json
+          cat dist/latest.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

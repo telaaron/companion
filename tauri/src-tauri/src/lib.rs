@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Runtime};
+use tauri_plugin_updater::UpdaterExt;
 
 /// Global handle to the companion-bin child process.
 struct ServerProcess(Mutex<Option<Child>>);
@@ -105,9 +106,61 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     Menu::with_items(app, &[&open, &start, &stop, &quit])
 }
 
+/// Check GitHub releases for a newer version, download + install + restart.
+///
+/// Non-blocking: runs in the background after the window is already shown.
+/// Failures are swallowed and logged — we never want a network hiccup to
+/// stop the user from working.
+async fn maybe_update(app: AppHandle) {
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("companion: updater init failed: {e}");
+            return;
+        }
+    };
+
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        Ok(None) => return, // already up to date
+        Err(e) => {
+            eprintln!("companion: update check failed: {e}");
+            return;
+        }
+    };
+
+    eprintln!(
+        "companion: update available — current {}, latest {}",
+        update.current_version, update.version
+    );
+
+    match update
+        .download_and_install(
+            |_chunk, _total| {
+                // No-op progress callback — could surface to the UI later.
+            },
+            || {
+                eprintln!("companion: update downloaded, restarting…");
+            },
+        )
+        .await
+    {
+        Ok(()) => {
+            // Stop the Python server cleanly, then let Tauri restart.
+            stop_server(&app);
+            app.restart();
+        }
+        Err(e) => {
+            eprintln!("companion: update install failed: {e}");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(ServerProcess(Mutex::new(None)))
         .setup(|app| {
             // Spawn the Python server immediately.
@@ -156,6 +209,13 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Fire-and-forget update check after the window is up.
+            // Runs in the Tauri async runtime so it doesn't block startup.
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                maybe_update(update_handle).await;
+            });
 
             Ok(())
         })

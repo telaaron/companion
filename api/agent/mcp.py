@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -163,13 +164,45 @@ class MCPClient:
             self._inflight.clear()
 
     async def _drain_stderr(self) -> None:
+        """Drain the MCP server's stderr and forward to the debug log.
+
+        Capped at ~4 MB per minute per server so a busted MCP that prints
+        unbounded errors can't pin memory through loguru's queue or
+        explode the log file. Lines beyond the cap are counted and
+        summarised once the window resets.
+        """
         assert self._proc is not None
         if self._proc.stderr is None:
             return
+        max_bytes_per_window = 4 * 1024 * 1024  # 4 MB / 60 s
+        window_seconds = 60.0
+        bytes_in_window = 0
+        dropped_in_window = 0
+        window_start = time.monotonic()
         try:
             async for line in self._proc.stderr:
+                now = time.monotonic()
+                if now - window_start > window_seconds:
+                    if dropped_in_window:
+                        logger.warning(
+                            "MCP {}: dropped {} stderr lines in last {:.0f}s (cap reached)",
+                            self.name,
+                            dropped_in_window,
+                            window_seconds,
+                        )
+                    window_start = now
+                    bytes_in_window = 0
+                    dropped_in_window = 0
+                bytes_in_window += len(line)
+                if bytes_in_window > max_bytes_per_window:
+                    dropped_in_window += 1
+                    continue
+                # Truncate any single absurdly long line.
+                snippet = line[:4096]
                 logger.debug(
-                    "MCP {}: {}", self.name, line.decode(errors="replace").rstrip()
+                    "MCP {}: {}",
+                    self.name,
+                    snippet.decode(errors="replace").rstrip(),
                 )
         except Exception:
             pass

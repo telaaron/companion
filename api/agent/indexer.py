@@ -36,6 +36,57 @@ from loguru import logger
 _CHUNK_TOKENS = 800
 _MAX_FILE_BYTES = 256 * 1024  # 256 KB — skip larger files
 _DEBOUNCE_S = 0.25  # 250 ms debounce window
+_WATCH_QUEUE_MAXSIZE = 5_000  # hard cap on pending file-change events
+
+# Directory names we always skip when walking + watching. These commonly
+# contain massive amounts of small files (packed git refs, npm modules,
+# Python venvs, build caches) that would balloon the indexer's memory
+# footprint without contributing useful RAG context.
+_SKIP_DIR_NAMES: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".idea",
+        ".vscode",
+        ".venv",
+        "venv",
+        "env",
+        ".env",
+        "node_modules",
+        "bower_components",
+        "vendor",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".cache",
+        "dist",
+        "build",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".turbo",
+        ".parcel-cache",
+        "target",  # Rust
+        ".gradle",
+        ".tox",
+        ".eggs",
+        ".DS_Store",
+        ".Trash",
+        "Library",  # ~/Library on macOS
+    }
+)
+
+
+def _should_skip_path(path: Path) -> bool:
+    """Return True if any component of *path* matches a skip-dir name.
+
+    Used both by the initial scan and the watchdog handler so the
+    indexer never reads files under noisy build / cache directories.
+    """
+    return any(part in _SKIP_DIR_NAMES for part in path.parts)
+
 
 # ---------------------------------------------------------------------------
 # Token counting (lazy import to avoid startup cost when indexer is disabled)
@@ -189,10 +240,16 @@ class Indexer:
             if not root.exists():
                 logger.warning("INDEXER: path does not exist, skipping: {}", root)
                 continue
-            for dirpath, _dirs, files in os.walk(root):
+            for dirpath, dirs, files in os.walk(root):
+                # Prune skip-dirs in-place so os.walk doesn't recurse into
+                # them. Cuts traversal time on home-directory scans by
+                # orders of magnitude (no more 100k node_modules entries).
+                dirs[:] = [d for d in dirs if d not in _SKIP_DIR_NAMES]
                 for fname in files:
                     fpath = Path(dirpath) / fname
                     if fpath.suffix.lower() not in self._allowed_exts:
+                        continue
+                    if _should_skip_path(fpath):
                         continue
                     try:
                         size = fpath.stat().st_size
@@ -252,7 +309,10 @@ class Indexer:
         )
         from watchdog.observers import Observer
 
-        self._queue = asyncio.Queue()
+        # Bound the queue so a runaway watcher (filesystem churn, log
+        # files in watched dirs, etc.) can't grow it without limit and
+        # pin memory in pending event tuples.
+        self._queue = asyncio.Queue(maxsize=_WATCH_QUEUE_MAXSIZE)
         loop = asyncio.get_running_loop()
 
         class _Handler(FileSystemEventHandler):
@@ -278,9 +338,27 @@ class Indexer:
                     return
                 if self._lp.is_closed():
                     return
+                # Drop events under skip-dirs at the source so they never
+                # land on the queue or trigger a file read.
+                if _should_skip_path(Path(path)):
+                    return
                 with contextlib.suppress(RuntimeError):
                     self._lp.call_soon_threadsafe(
-                        lambda: self._q.put_nowait((action, path))
+                        lambda: self._enqueue_drop_if_full(action, path)
+                    )
+
+            def _enqueue_drop_if_full(self, action: str, path: str) -> None:
+                """Best-effort enqueue. Drops the event if the queue is full.
+
+                Dropping is safer than blocking because the watchdog
+                thread feeds the queue and blocking it would starve the
+                Observer's IO loop.
+                """
+                try:
+                    self._q.put_nowait((action, path))
+                except asyncio.QueueFull:
+                    logger.warning(
+                        "INDEXER: watch queue full, dropping event for {}", path
                     )
 
             def on_modified(self, event: FileSystemEvent) -> None:

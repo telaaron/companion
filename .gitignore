@@ -21,3 +21,5 @@ debug-*.log
 .coverage
 llama_cache
 .smoke-results
+tauri/companion-updater.key
+tauri/companion-updater.key.pub

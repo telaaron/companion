@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Companion",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "identifier": "com.companion.app",
   "build": {
     "frontendDist": "http://127.0.0.1:8082/ui/"
@@ -33,6 +33,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -56,6 +57,16 @@
       "deb": {
         "depends": []
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/telaaron/companion/releases/latest/download/latest.json"
+      ],
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg3NzkxNDc3MDEwOEJGMTMKUldRVHZ3Z0JkeFI1aDAwYjduZU9TNmNhZ29CL1dla3dVRTlhUnBGN3JEVUdJYjBielJsZ1UyaXoK"
     }
   }
 }

@@ -54,8 +54,12 @@ def detect_platform(name: str) -> str | None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--version", required=True, help="Release version without leading v")
-    ap.add_argument("--repo", required=True, help="GitHub repo, e.g. telaaron/companion")
+    ap.add_argument(
+        "--version", required=True, help="Release version without leading v"
+    )
+    ap.add_argument(
+        "--repo", required=True, help="GitHub repo, e.g. telaaron/companion"
+    )
     ap.add_argument("--bundles-dir", required=True, type=Path)
     ap.add_argument("--output", required=True, type=Path)
     ap.add_argument("--notes", default="See the GitHub release notes.")
@@ -73,11 +77,17 @@ def main() -> int:
         # The signed payload is the file with the .sig suffix removed.
         payload = sig_path.with_suffix("")
         if not payload.is_file():
-            print(f"WARN: signature {sig_path.name} has no matching payload", file=sys.stderr)
+            print(
+                f"WARN: signature {sig_path.name} has no matching payload",
+                file=sys.stderr,
+            )
             continue
         plat = detect_platform(payload.name)
         if plat is None:
-            print(f"WARN: cannot map {payload.name} to a platform; skipping", file=sys.stderr)
+            print(
+                f"WARN: cannot map {payload.name} to a platform; skipping",
+                file=sys.stderr,
+            )
             continue
         try:
             signature = sig_path.read_text(encoding="utf-8").strip()
@@ -91,7 +101,10 @@ def main() -> int:
         print(f"OK: {plat} -> {payload.name}", file=sys.stderr)
 
     if not platforms:
-        print("ERROR: no signed bundles found — auto-updater manifest would be empty", file=sys.stderr)
+        print(
+            "ERROR: no signed bundles found — auto-updater manifest would be empty",
+            file=sys.stderr,
+        )
         return 2
 
     manifest = {

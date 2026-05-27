@@ -166,14 +166,26 @@ pub fn run() {
             // Spawn the Python server immediately.
             spawn_server(app.handle());
 
-            // Wait up to 5 s for the server to be ready.
-            let ready = wait_for_server(Duration::from_secs(5));
-            if ready {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.show();
-                }
-            } else {
-                eprintln!("companion: server did not become ready within 5 s");
+            // Block setup until the server is ready or we time out. The
+            // bundled FastAPI does plugin discovery + MCP bootstrap on
+            // startup, which can take 25-30 s on a cold boot. If we show
+            // the window before the URL responds, WebKit caches a load
+            // failure and the user gets a black screen with no retry.
+            let ready = wait_for_server(Duration::from_secs(60));
+            if !ready {
+                eprintln!(
+                    "companion: server did not become ready within 60 s; showing window anyway"
+                );
+            }
+            if let Some(win) = app.get_webview_window("main") {
+                // Force a navigation even if the WebView started loading
+                // before the server was up — eval()'d location.reload
+                // bypasses WebKit's stale-load cache.
+                let _ = win.eval(
+                    "window.location.replace('http://127.0.0.1:8082/ui/');",
+                );
+                let _ = win.show();
+                let _ = win.set_focus();
             }
 
             // Build tray.

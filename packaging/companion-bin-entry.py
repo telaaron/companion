@@ -6,13 +6,20 @@ The frozen binary is what the Tauri shell spawns. It must:
 2. Fix the working directory so relative file lookups in
    :mod:`cli.entrypoints` (notably the bundled ``.env.example``) resolve
    against the unpacked bundle, not the directory the user clicked from.
-3. Hand off to :func:`cli.entrypoints.serve`.
+3. Call ``multiprocessing.freeze_support`` BEFORE any other work so
+   children spawned by uvicorn / asyncio.to_thread / tiktoken don't
+   re-enter ``main()`` and fork-bomb the process. Without this guard,
+   each child process re-executes the bundle entry, spawns its own
+   FastAPI server, and the whole chain hangs at "Waiting for
+   application startup" while RAM climbs.
+4. Hand off to :func:`cli.entrypoints.serve`.
 
 Keep this file tiny on purpose — every line is hot-path for cold-start.
 """
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import sys
 
@@ -44,4 +51,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # CRITICAL: must run before any subprocess-spawning import. PyInstaller
+    # frozen binaries re-execute the entry point for each multiprocessing
+    # child; without freeze_support the child runs ``serve()`` and starts
+    # a competing uvicorn that never binds. Force the "spawn" start method
+    # so behavior is identical across macOS / Linux / Windows.
+    multiprocessing.freeze_support()
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        # Already set by a parent — fine.
+        pass
     main()

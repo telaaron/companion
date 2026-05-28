@@ -23,3 +23,13 @@ llama_cache
 .smoke-results
 tauri/companion-updater.key
 tauri/companion-updater.key.pub
+
+# OS / IDE
+.DS_Store
+**/.DS_Store
+
+# Local PyInstaller / Tauri build artifacts (per-platform regenerated in CI)
+/build/
+/dist/
+/packaging/build/
+/packaging/dist/

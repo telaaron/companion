@@ -4,6 +4,7 @@
 	import { toasts } from '$lib/stores.svelte';
 	import type { SettingsSnapshot } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
+	import SetupWizard from '$lib/SetupWizard.svelte';
 	import { Pencil, Wand2, X, Check, Download } from 'lucide-svelte';
 	import EditableRow from './EditableRow.svelte';
 
@@ -11,6 +12,7 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let updateChecking = $state(false);
+	let showWizard = $state(false);
 
 	async function load() {
 		loading = true;
@@ -132,7 +134,7 @@
 			{/if}
 			Check for updates
 		</button>
-		<button class="btn btn-primary" type="button">
+		<button class="btn btn-primary" type="button" onclick={() => (showWizard = true)}>
 			<Wand2 size={14} strokeWidth={2} /> Setup wizard
 		</button>
 	{/snippet}
@@ -242,6 +244,8 @@
 		</div>
 	{/if}
 </div>
+
+<SetupWizard bind:open={showWizard} />
 
 <style>
 	.fg-muted {

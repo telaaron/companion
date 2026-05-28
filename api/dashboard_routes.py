@@ -1235,7 +1235,7 @@ def _read_build_info() -> dict[str, str]:
                 "sha": sha_m.group(1) if sha_m else "dev",
                 "ts": ts_m.group(1) if ts_m else "",
             }
-        except (OSError, FileNotFoundError):
+        except OSError, FileNotFoundError:
             continue
     return {"sha": "dev", "ts": ""}
 

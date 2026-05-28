@@ -19,6 +19,7 @@ Keep this file tiny on purpose — every line is hot-path for cold-start.
 
 from __future__ import annotations
 
+import contextlib
 import multiprocessing
 import os
 import sys
@@ -57,9 +58,8 @@ if __name__ == "__main__":
     # a competing uvicorn that never binds. Force the "spawn" start method
     # so behavior is identical across macOS / Linux / Windows.
     multiprocessing.freeze_support()
-    try:
+    # Already-set in a parent process is fine — silently keep the existing
+    # start method.
+    with contextlib.suppress(RuntimeError):
         multiprocessing.set_start_method("spawn", force=True)
-    except RuntimeError:
-        # Already set by a parent — fine.
-        pass
     main()

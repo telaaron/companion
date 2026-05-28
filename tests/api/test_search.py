@@ -113,7 +113,7 @@ def seeded_db(fresh_db):
 def test_search_requires_auth(fresh_db, app_client: TestClient):
     """The search endpoint requires authentication."""
     # Create a fresh app without the default auth token
-    resp = app_client.get("/v1/search?q=test")
+    app_client.get("/v1/search?q=test")
     # With the standard mock setup, the default token freecc works
     # but we check that the endpoint at least responds properly
     resp_auth = app_client.get(

@@ -19,8 +19,9 @@ use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::UpdaterExt;
+use serde::Serialize;
 
 /// Global handle to the companion-bin child process.
 struct ServerProcess(Mutex<Option<Child>>);
@@ -106,25 +107,69 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     Menu::with_items(app, &[&open, &start, &stop, &quit])
 }
 
+/// Event payload emitted during update lifecycle.
+#[derive(Clone, Serialize)]
+struct UpdaterStatus {
+    phase: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progress_pct: Option<f64>,
+}
+
 /// Check GitHub releases for a newer version, download + install + restart.
 ///
 /// Non-blocking: runs in the background after the window is already shown.
 /// Failures are swallowed and logged — we never want a network hiccup to
 /// stop the user from working.
 async fn maybe_update(app: AppHandle) {
+    let _ = app.emit(
+        "updater://status",
+        UpdaterStatus {
+            phase: "checking".into(),
+            message: "Checking for updates…".into(),
+            progress_pct: None,
+        },
+    );
+
     let updater = match app.updater() {
         Ok(u) => u,
         Err(e) => {
             eprintln!("companion: updater init failed: {e}");
+            let _ = app.emit(
+                "updater://status",
+                UpdaterStatus {
+                    phase: "error".into(),
+                    message: format!("Updater init failed: {e}"),
+                    progress_pct: None,
+                },
+            );
             return;
         }
     };
 
     let update = match updater.check().await {
         Ok(Some(update)) => update,
-        Ok(None) => return, // already up to date
+        Ok(None) => {
+            let _ = app.emit(
+                "updater://status",
+                UpdaterStatus {
+                    phase: "up-to-date".into(),
+                    message: "Companion is up to date".into(),
+                    progress_pct: None,
+                },
+            );
+            return;
+        }
         Err(e) => {
             eprintln!("companion: update check failed: {e}");
+            let _ = app.emit(
+                "updater://status",
+                UpdaterStatus {
+                    phase: "error".into(),
+                    message: format!("Update check failed: {e}"),
+                    progress_pct: None,
+                },
+            );
             return;
         }
     };
@@ -134,26 +179,89 @@ async fn maybe_update(app: AppHandle) {
         update.current_version, update.version
     );
 
+    let _ = app.emit(
+        "updater://status",
+        UpdaterStatus {
+            phase: "downloading".into(),
+            message: format!(
+                "Downloading {} → {} (0%)",
+                update.current_version, update.version
+            ),
+            progress_pct: Some(0.0),
+        },
+    );
+
+    // Clone for the download progress callbacks.
+    let app_clone = app.clone();
+    let version = update.version.clone();
+    let current = update.current_version.clone();
+
     match update
         .download_and_install(
-            |_chunk, _total| {
-                // No-op progress callback — could surface to the UI later.
+            |downloaded, total| {
+                let pct = match total {
+                    Some(t) if t > 0 => (downloaded as f64 / t as f64 * 100.0).min(99.0),
+                    _ => 0.0,
+                };
+                let _ = app_clone.emit(
+                    "updater://status",
+                    UpdaterStatus {
+                        phase: "downloading".into(),
+                        message: format!(
+                            "Downloading {current} → {version} ({pct:.0}%)",
+                        ),
+                        progress_pct: Some(pct),
+                    },
+                );
             },
             || {
-                eprintln!("companion: update downloaded, restarting…");
+                // Download complete callback — about to restart.
+                let _ = app_clone.emit(
+                    "updater://status",
+                    UpdaterStatus {
+                        phase: "installing".into(),
+                        message: "Download complete, installing…".into(),
+                        progress_pct: Some(100.0),
+                    },
+                );
             },
         )
         .await
     {
         Ok(()) => {
+            let _ = app.emit(
+                "updater://status",
+                UpdaterStatus {
+                    phase: "restarting".into(),
+                    message: "Restarting…".into(),
+                    progress_pct: None,
+                },
+            );
             // Stop the Python server cleanly, then let Tauri restart.
             stop_server(&app);
             app.restart();
         }
         Err(e) => {
             eprintln!("companion: update install failed: {e}");
+            let _ = app.emit(
+                "updater://status",
+                UpdaterStatus {
+                    phase: "error".into(),
+                    message: format!("Update install failed: {e}"),
+                    progress_pct: None,
+                },
+            );
         }
     }
+}
+
+/// Tauri command: manually check for updates from the Settings page.
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn(async move {
+        maybe_update(app).await;
+    });
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -162,6 +270,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(ServerProcess(Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![check_update])
         .setup(|app| {
             // Spawn the Python server immediately.
             spawn_server(app.handle());

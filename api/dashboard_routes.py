@@ -1222,7 +1222,9 @@ def _read_build_info() -> dict[str, str]:
         _Path(sys.executable).parent / "api" / "build_info.py",
     ]
     if getattr(sys, "frozen", False):
-        candidates.insert(0, _Path(sys._MEIPASS) / "api" / "build_info.py")  # type: ignore[attr-defined]
+        _meipass = getattr(sys, "_MEIPASS", "")
+        if _meipass:
+            candidates.insert(0, _Path(_meipass) / "api" / "build_info.py")
 
     for p in candidates:
         try:

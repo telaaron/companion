@@ -28,6 +28,7 @@ REPO = Path(SPECPATH).resolve().parent
 # touches at runtime must be present in the unpacked bundle.
 datas: list[tuple[str, str]] = [
     (str(REPO / "api" / "ui_static"), "api/ui_static"),
+    (str(REPO / "api" / "build_info.py"), "api"),
     (str(REPO / "plugins"), "plugins"),
     (str(REPO / "routines"), "routines"),
     (str(REPO / ".env.example"), "."),

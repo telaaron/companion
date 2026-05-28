@@ -233,6 +233,9 @@
 						<tr><td class="mono fg-muted">env_file</td><td class="mono truncate" title={data.env_file}>{data.env_file}</td></tr>
 						<tr><td class="mono fg-muted">pid</td><td class="mono">{data.process.pid}</td></tr>
 						<tr><td class="mono fg-muted">uptime_s</td><td class="mono">{data.process.uptime_s}</td></tr>
+						{#if data.build}
+							<tr><td class="mono fg-muted">build</td><td class="mono" title={data.build.ts}>{data.build.sha} ({data.build.ts})</td></tr>
+						{/if}
 					</tbody>
 				</table>
 			</div>

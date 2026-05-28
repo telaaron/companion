@@ -27,6 +27,7 @@ export interface SettingsSnapshot {
 	port: number;
 	anthropic_auth_token_set: boolean;
 	env_file: string;
+	build?: { sha: string; ts: string };
 	process: { pid: number; uptime_s: number };
 }
 

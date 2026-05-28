@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 from config.settings import Settings
 from providers.registry import ProviderRegistry
 
-from . import datastore
+from . import build_info, datastore
 from .dependencies import CurrentUserId, get_settings, require_api_key
 from .pricing import known_image_prices, known_token_prices, pricing_snapshot
 
@@ -1249,6 +1249,10 @@ async def settings_route(
         "port": settings.port,
         "anthropic_auth_token_set": bool(settings.anthropic_auth_token),
         "env_file": str(_ENV_FILE),
+        "build": {
+            "sha": getattr(build_info, "GIT_SHA", "dev"),
+            "ts": getattr(build_info, "BUILD_TIMESTAMP", ""),
+        },
         "process": {
             "pid": os.getpid(),
             "uptime_s": int(time.time() - _PROCESS_START),

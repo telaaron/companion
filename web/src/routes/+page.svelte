@@ -5,6 +5,7 @@
 	import type { Session, Message, Project } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
 	import Markdown from '$lib/Markdown.svelte';
+	import ChatBody from '$lib/ChatBody.svelte';
 	import { Plus, Send, Mic, MicOff, Trash2, Loader2, RotateCcw, Copy, ChevronDown } from 'lucide-svelte';
 
 	let sessions = $state<Session[]>([]);
@@ -436,10 +437,17 @@
 						onkeydown={(e) => { if (e.key === 'Enter') selectSession(s.id); }}
 					>
 						<div class="session-title">{s.title || 'Untitled'}</div>
-						<button class="btn btn-ghost btn-icon" type="button" onclick={(e) => {
-							e.stopPropagation();
-							deleteSession(s.id);
-						}} aria-label="Delete session">
+						<button
+							class="btn btn-ghost btn-icon session-delete"
+							type="button"
+							onclick={(e) => {
+								e.stopPropagation();
+								e.preventDefault();
+								deleteSession(s.id);
+							}}
+							onpointerdown={(e) => e.stopPropagation()}
+							aria-label="Delete session"
+						>
 							<Trash2 size={12} strokeWidth={2} />
 						</button>
 					</div>
@@ -507,7 +515,7 @@
 					</header>
 					<div class="msg-body">
 						{#if m.role === 'assistant'}
-							<Markdown content={m.content} />
+							<ChatBody content={m.content} />
 						{:else}
 							{m.content}
 						{/if}
@@ -700,7 +708,13 @@
 		align-items: center;
 		font-size: var(--fs-12);
 		color: var(--fg-muted);
-		margin-bottom: 6px;
+		margin-bottom: 2px;
+	}
+	.session-delete {
+		opacity: 0.5;
+	}
+	.session-delete:hover {
+		opacity: 1;
 	}
 	.msg-role {
 		text-transform: uppercase;

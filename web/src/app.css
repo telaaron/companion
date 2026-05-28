@@ -353,8 +353,13 @@ a:hover {
 
 .table {
 	width: 100%;
+	table-layout: fixed;
 	border-collapse: collapse;
 	font-size: var(--fs-13);
+}
+.table td,
+.table th {
+	overflow: hidden;
 }
 .table th {
 	text-align: left;

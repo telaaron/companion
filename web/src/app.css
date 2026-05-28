@@ -211,7 +211,21 @@ a:hover {
 }
 .sidebar-footer .cost-row {
 	display: flex;
+	align-items: center;
+	gap: 6px;
 	justify-content: space-between;
+}
+.sidebar-footer .status-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--ok);
+	box-shadow: 0 0 4px var(--ok);
+	flex: 0 0 6px;
+}
+.sidebar-footer .status-dot.offline {
+	background: var(--error);
+	box-shadow: none;
 }
 .sidebar-footer button.theme {
 	width: 100%;

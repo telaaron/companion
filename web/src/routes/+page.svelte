@@ -49,19 +49,23 @@
 
 	async function loadUpstreamModels() {
 		try {
+			// Backend returns models as bare strings, not objects with .id.
 			const data = await api<{
-				providers?: Array<{ provider: string; models?: Array<{ id: string }> }>;
+				providers?: Array<{ provider: string; models?: string[] }>;
 				configured?: Array<{ provider: string; model: string }>;
 			}>('/v1/models/upstream');
-			const refs: string[] = [];
+			const refs = new Set<string>();
 			for (const p of data.providers || []) {
-				for (const m of p.models || []) refs.push(`${p.provider}/${m.id}`);
+				for (const m of p.models || []) {
+					if (!m) continue;
+					refs.add(m.includes('/') ? m : `${p.provider}/${m}`);
+				}
 			}
 			for (const c of data.configured || []) {
-				const ref = c.model.includes('/') ? c.model : `${c.provider}/${c.model}`;
-				if (!refs.includes(ref)) refs.push(ref);
+				if (!c?.model) continue;
+				refs.add(c.model.includes('/') ? c.model : `${c.provider}/${c.model}`);
 			}
-			upstreamModels = refs.sort();
+			upstreamModels = [...refs].sort();
 		} catch {
 			/* keep empty list */
 		}
@@ -367,6 +371,41 @@
 		await Promise.all([loadSessions(), loadProjects(), checkVoice(), loadDefaultModel(), loadUpstreamModels()]);
 	});
 
+	// Group sessions by their linked project so the sidebar mirrors the
+	// vanilla UI: pinned project sections at the top, unlinked chats
+	// under a final "No project" bucket. Projects with no sessions are
+	// hidden so the sidebar stays compact.
+	let groupedSessions = $derived.by(() => {
+		const buckets = new Map<string | null, { name: string; sessions: Session[] }>();
+		const projectName = new Map<string, string>();
+		for (const p of projects) projectName.set(p.id, p.name);
+
+		for (const s of sessions) {
+			const key = s.project_id ?? null;
+			if (!buckets.has(key)) {
+				buckets.set(key, {
+					name: key ? projectName.get(key) ?? 'Project' : 'No project',
+					sessions: []
+				});
+			}
+			buckets.get(key)!.sessions.push(s);
+		}
+
+		const orderedKeys: Array<string | null> = [];
+		// Project order follows the projects array; null bucket last.
+		for (const p of projects) {
+			if (buckets.has(p.id)) orderedKeys.push(p.id);
+		}
+		if (buckets.has(null)) orderedKeys.push(null);
+		// Catch any project ids the projects array didn't cover.
+		for (const k of buckets.keys()) {
+			if (k !== null && !projectName.has(k as string) && !orderedKeys.includes(k)) {
+				orderedKeys.push(k);
+			}
+		}
+		return orderedKeys.map((k) => ({ key: k, ...buckets.get(k)! }));
+	});
+
 	function fmtTime(iso: string): string {
 		try {
 			const d = new Date(iso);
@@ -385,23 +424,26 @@
 			</button>
 		</div>
 		<div class="sessions-list">
-			{#each sessions as s (s.id)}
-				<div
-					class="session-row"
-					class:active={s.id === activeSessionId}
-					role="button"
-					tabindex="0"
-					onclick={() => selectSession(s.id)}
-					onkeydown={(e) => { if (e.key === 'Enter') selectSession(s.id); }}
-				>
-					<div class="session-title">{s.title || 'Untitled'}</div>
-					<button class="btn btn-ghost btn-icon" type="button" onclick={(e) => {
-						e.stopPropagation();
-						deleteSession(s.id);
-					}} aria-label="Delete session">
-						<Trash2 size={12} strokeWidth={2} />
-					</button>
-				</div>
+			{#each groupedSessions as group (group.key ?? '__none__')}
+				<div class="session-group-label">{group.name}</div>
+				{#each group.sessions as s (s.id)}
+					<div
+						class="session-row"
+						class:active={s.id === activeSessionId}
+						role="button"
+						tabindex="0"
+						onclick={() => selectSession(s.id)}
+						onkeydown={(e) => { if (e.key === 'Enter') selectSession(s.id); }}
+					>
+						<div class="session-title">{s.title || 'Untitled'}</div>
+						<button class="btn btn-ghost btn-icon" type="button" onclick={(e) => {
+							e.stopPropagation();
+							deleteSession(s.id);
+						}} aria-label="Delete session">
+							<Trash2 size={12} strokeWidth={2} />
+						</button>
+					</div>
+				{/each}
 			{/each}
 			{#if sessions.length === 0}
 				<div class="empty">No chats yet</div>
@@ -559,6 +601,16 @@
 		overflow-y: auto;
 		flex: 1;
 		padding: var(--sp-2);
+	}
+	.session-group-label {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--fg-dim);
+		padding: var(--sp-3) 10px 4px;
+	}
+	.session-group-label:first-child {
+		padding-top: var(--sp-2);
 	}
 	.session-row {
 		display: flex;

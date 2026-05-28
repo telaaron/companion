@@ -57,13 +57,6 @@
 
 <div class="app">
 	<aside class="sidebar">
-		<div class="brand">
-			<div class="brand-name">Companion</div>
-			<div class="brand-status" class:offline={!health.online}>
-				<span class="dot"></span>
-				{health.online ? 'online' : 'offline'}
-			</div>
-		</div>
 		<nav class="nav">
 			{#each NAV as item (item.href)}
 				{@const Icon = item.icon}
@@ -79,8 +72,12 @@
 			{/each}
 		</nav>
 		<div class="sidebar-footer">
-			<div class="cost-row"><span>Today</span><span>${cost.today.toFixed(4)}</span></div>
-			<div class="cost-row"><span>7d</span><span>${cost.week.toFixed(4)}</span></div>
+			<div class="cost-row">
+				<span class="status-dot" class:offline={!health.online} title={health.online ? 'online' : 'offline'}></span>
+				<span style="flex: 1">Today</span>
+				<span>${cost.today.toFixed(4)}</span>
+			</div>
+			<div class="cost-row"><span style="flex: 1; padding-left: 14px">7d</span><span>${cost.week.toFixed(4)}</span></div>
 			<button class="theme" type="button" onclick={() => theme.toggle()}>
 				{theme.value === 'dark' ? '☼ light' : '☾ dark'}
 			</button>

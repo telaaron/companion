@@ -13,6 +13,7 @@ export interface SettingsSnapshot {
 	thinking: { default_enabled: boolean; budget_max: number };
 	deepseek_image_fallback: { provider: string | null; model: string | null };
 	image_gen: { provider: string | null; model: string | null };
+	voice: { enabled: boolean; whisper_binary: string | null; whisper_model: string | null };
 	agent_mode: {
 		enabled: boolean;
 		max_turns: number;
@@ -120,11 +121,19 @@ export interface Capability {
 export interface Routine {
 	id: string;
 	name: string;
-	cron: string;
-	prompt: string;
+	description?: string;
+	trigger_type?: string;
+	trigger_config?: string | Record<string, unknown>;
+	payload?: string | Record<string, unknown>;
 	enabled: boolean;
+	project_id?: string;
+	cron?: string;    // deprecated — use trigger_config
+	prompt?: string;  // deprecated — use payload
 	last_run_at?: string;
+	last_run_ms?: number;
 	next_run_at?: string;
+	next_run_ms?: number;
+	created_at?: string;
 }
 
 export interface Skill {
@@ -171,4 +180,14 @@ export interface Preference {
 	key: string;
 	value: string;
 	category?: string;
+}
+
+export interface SearchResult {
+	kind: string;
+	title: string;
+	subtitle: string;
+	navigate_url: string;
+	score: number;
+	ts: number;
+	ref: string;
 }

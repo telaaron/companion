@@ -42,7 +42,8 @@
 
 	function fmtTime(ts: number): string {
 		try {
-			return new Date(ts * 1000).toLocaleString();
+			// Backend stores ts as milliseconds (int(time.time() * 1000)).
+			return new Date(ts).toLocaleString();
 		} catch {
 			return '';
 		}

@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -38,14 +39,36 @@ from .pricing import known_image_prices, known_token_prices, pricing_snapshot
 dashboard_router = APIRouter()
 
 _ENV_FILE = Path.home() / ".config" / "companion" / ".env"
-_ROOT_FILES_ALLOWLIST = (
+_ROOT_FILES_ALWAYS_VISIBLE = (
     "AGENTS.md",
     "CLAUDE.md",
-    "PLAN.md",
-    "ROADMAP.md",
-    "README.md",
+    "BUGS.md",
+    ".gitignore",
     ".env.example",
 )
+
+
+def _compute_allowlist() -> tuple[str, ...]:
+    """Build the root-file allowlist from the repo root.
+
+    Returns the union of the always-visible files plus every *.md file
+    (excluding dot-prefixed ones) that lives directly in the root.
+    """
+    root = _repo_root()
+    dynamic: set[str] = set()
+    try:
+        for p in root.iterdir():
+            if not p.is_file():
+                continue
+            if p.name in {".DS_Store"}:
+                continue
+            if p.suffix.lower() == ".md" and not p.name.startswith("."):
+                dynamic.add(p.name)
+    except OSError:
+        pass
+    return tuple(sorted({*_ROOT_FILES_ALWAYS_VISIBLE, *dynamic}))
+
+
 _SECRET_KEY_HINTS = (
     "key",
     "token",
@@ -744,6 +767,26 @@ async def list_preferences(_auth=Depends(require_api_key)) -> dict[str, Any]:
     return {"preferences": entries, "path": str(path)}
 
 
+class PreferenceIn(BaseModel):
+    key: str = Field(..., max_length=200)
+    value: str = Field(default="", max_length=100_000)
+
+
+@dashboard_router.post("/v1/preferences")
+async def upsert_preference(
+    body: PreferenceIn, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    """Create or update a single preference."""
+    from api.agent.extras.preferences import _load_prefs, _prefs_path, _save_prefs
+
+    path = _prefs_path()
+    prefs = _load_prefs(path)
+    prefs[body.key.strip()] = body.value
+    _save_prefs(path, prefs)
+    datastore.record_audit(category="preferences", event="set", detail=body.key.strip())
+    return {"ok": True, "key": body.key.strip()}
+
+
 @dashboard_router.delete("/v1/preferences/{key}")
 async def delete_preference(key: str, _auth=Depends(require_api_key)) -> dict[str, Any]:
     """Delete a single preference by key."""
@@ -763,12 +806,17 @@ async def delete_preference(key: str, _auth=Depends(require_api_key)) -> dict[st
 
 
 def _repo_root() -> Path:
-    """Best-effort repo root: directory containing AGENTS.md."""
-    candidates = [
-        Path.cwd(),
-        Path.cwd() / ".claude" / "worktrees",
-        Path(__file__).resolve().parents[1],
-    ]
+    """Best-effort repo root: directory containing AGENTS.md.
+
+    In PyInstaller bundles ``Path(__file__)`` resolves inside a temp
+    directory, so we prioritize ``os.getcwd()`` (the user's workspace)
+    when frozen.
+    """
+    candidates = [Path.cwd()]
+    if not getattr(sys, "frozen", False):
+        # In dev mode the package is two levels below the repo root.
+        candidates.append(Path(__file__).resolve().parents[1])
+    candidates.append(Path.cwd() / ".claude" / "worktrees")
     for c in candidates:
         if (c / "AGENTS.md").is_file():
             return c
@@ -778,8 +826,9 @@ def _repo_root() -> Path:
 @dashboard_router.get("/v1/root-files")
 async def root_files_list(_auth=Depends(require_api_key)) -> dict[str, Any]:
     root = _repo_root()
+    allowlist = _compute_allowlist()
     files = []
-    for name in _ROOT_FILES_ALLOWLIST:
+    for name in allowlist:
         path = root / name
         if path.is_file():
             files.append(
@@ -794,7 +843,7 @@ async def root_files_list(_auth=Depends(require_api_key)) -> dict[str, Any]:
 
 @dashboard_router.get("/v1/root-files/{name}")
 async def root_file_get(name: str, _auth=Depends(require_api_key)) -> dict[str, Any]:
-    if name not in _ROOT_FILES_ALLOWLIST:
+    if name not in _compute_allowlist():
         raise HTTPException(404, "file not in allowlist")
     path = _repo_root() / name
     if not path.is_file():
@@ -814,7 +863,7 @@ class RootFileIn(BaseModel):
 async def root_file_set(
     name: str, body: RootFileIn, _auth=Depends(require_api_key)
 ) -> dict[str, Any]:
-    if name not in _ROOT_FILES_ALLOWLIST:
+    if name not in _compute_allowlist():
         raise HTTPException(404, "file not in allowlist")
     path = _repo_root() / name
     before = path.stat().st_size if path.is_file() else 0
@@ -1181,6 +1230,11 @@ async def settings_route(
         "image_gen": {
             "provider": settings.image_gen_provider or None,
             "model": settings.image_gen_model or None,
+        },
+        "voice": {
+            "enabled": settings.voice_note_enabled,
+            "whisper_binary": settings.whisper_binary or None,
+            "whisper_model": settings.whisper_model or None,
         },
         "agent_mode": {
             "enabled": settings.agent_mode_enabled,
@@ -2550,3 +2604,33 @@ async def _tts_elevenlabs(text: str, voice_id: str, api_key: str) -> Response:
         raise
     except Exception as exc:
         raise HTTPException(502, f"ElevenLabs TTS failed: {exc}") from exc
+
+
+# ============================================================ Unified search
+
+
+@dashboard_router.get("/v1/search")
+async def search_route(
+    q: str,
+    kinds: str | None = None,
+    limit: int = 50,
+    user_id: CurrentUserId = "default",
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Fuzzy search across all companion data — messages, files, sessions,
+    projects, memories, audit log, file edits, settings, and routines.
+
+    Query params:
+      ``q``      — search string
+      ``kinds``  — comma-separated filter, e.g. ``message,session,project``.
+                   Omit for all kinds.
+      ``limit``  — max results (default 50).
+    """
+    kinds_list = None
+    if kinds:
+        kinds_list = [k.strip() for k in kinds.split(",") if k.strip()]
+    return {
+        "results": datastore.search_all(
+            q, kinds=kinds_list, limit=max(1, min(limit, 200)), user_id=user_id
+        )
+    }

@@ -3,7 +3,7 @@
 	import { api } from '$lib/api';
 	import { toasts } from '$lib/stores.svelte';
 	import PageHeader from '$lib/PageHeader.svelte';
-	import { Save, Trash2, Plus, Eye, EyeOff } from 'lucide-svelte';
+	import { Save, Trash2, Plus, Eye, EyeOff, Copy } from 'lucide-svelte';
 
 	interface EnvEntry {
 		key: string;
@@ -111,9 +111,18 @@
 								</div>
 							</td>
 							<td>
-								<button class="btn btn-ghost btn-icon" type="button" onclick={() => remove(e.key)} title="Delete">
-									<Trash2 size={14} strokeWidth={2} />
-								</button>
+								<div class="row gap-1">
+									<button class="btn btn-ghost btn-icon" type="button" onclick={(ev) => {
+										ev.preventDefault();
+										navigator.clipboard.writeText(e.value);
+										toasts.show('Copied', 'ok');
+									}} title="Copy value">
+										<Copy size={14} strokeWidth={2} />
+									</button>
+									<button class="btn btn-ghost btn-icon" type="button" onclick={() => remove(e.key)} title="Delete">
+										<Trash2 size={14} strokeWidth={2} />
+									</button>
+								</div>
 							</td>
 						</tr>
 					{/each}

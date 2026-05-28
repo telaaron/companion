@@ -3,8 +3,9 @@
 
 	interface Props {
 		content: string;
+		onPreviewFile?: (path: string) => void;
 	}
-	let { content }: Props = $props();
+	let { content, onPreviewFile }: Props = $props();
 
 	interface TextSegment {
 		kind: 'text';
@@ -79,7 +80,12 @@
 				<button
 					class="tool-head"
 					type="button"
-					onclick={() => (expanded[idx] = !expanded[idx])}
+					onclick={() => {
+						if (seg.filePath && onPreviewFile) {
+							onPreviewFile(seg.filePath);
+						}
+						expanded[idx] = !expanded[idx];
+					}}
 				>
 					<span class="tool-icon">{seg.icon}</span>
 					<span class="tool-name">{seg.toolName}</span>

@@ -27,6 +27,37 @@
 	let mediaRecorder: MediaRecorder | null = null;
 	let chunks: Blob[] = [];
 
+	// Persisted thinking buffers keyed by local message id so the
+	// thinking pane survives stream-end.
+	let thinkings = $state<Map<string, string>>(new Map());
+
+	// Regenerate model-picker popover.
+	let regenPopover = $state<{ msgId: string | null; x: number; y: number }>({ msgId: null, x: 0, y: 0 });
+
+	// File preview panel
+	let filePreview = $state<{ path: string; content: string; loading: boolean; open: boolean }>({
+		path: '',
+		content: '',
+		loading: false,
+		open: false
+	});
+
+	async function previewFile(path: string) {
+		filePreview = { path, content: '', loading: true, open: true };
+		try {
+			const data = await api<{ content: string; size: number }>(
+				`/v1/preview/file?path=${encodeURIComponent(path)}`
+			);
+			filePreview = { path, content: data.content ?? '(empty)', loading: false, open: true };
+		} catch {
+			filePreview = { path, content: '(could not read file)', loading: false, open: true };
+		}
+	}
+
+	function closePreview() {
+		filePreview = { path: '', content: '', loading: false, open: false };
+	}
+
 	async function loadSessions() {
 		try {
 			const data = await api<{ sessions: Session[] }>('/v1/sessions');
@@ -50,7 +81,6 @@
 
 	async function loadUpstreamModels() {
 		try {
-			// Backend returns models as bare strings, not objects with .id.
 			const data = await api<{
 				providers?: Array<{ provider: string; models?: string[] }>;
 				configured?: Array<{ provider: string; model: string }>;
@@ -67,6 +97,33 @@
 				refs.add(c.model.includes('/') ? c.model : `${c.provider}/${c.model}`);
 			}
 			upstreamModels = [...refs].sort();
+			// Poll until the model count stabilises — provider
+			// registries populate asynchronously at startup.
+			if (refs.size <= 3) {
+				let previous = refs.size;
+				for (let i = 0; i < 6; i++) {
+					await new Promise((r) => setTimeout(r, 5000));
+					const retry = await api<{
+						providers?: Array<{ provider: string; models?: string[] }>;
+						configured?: Array<{ provider: string; model: string }>;
+					}>('/v1/models/upstream').catch(() => null);
+					if (!retry) break;
+					const retryRefs = new Set<string>();
+					for (const p of retry.providers || []) {
+						for (const m of p.models || []) {
+							if (!m) continue;
+							retryRefs.add(m.includes('/') ? m : `${p.provider}/${m}`);
+						}
+					}
+					for (const c of retry.configured || []) {
+						if (!c?.model) continue;
+						retryRefs.add(c.model.includes('/') ? c.model : `${c.provider}/${c.model}`);
+					}
+					if (retryRefs.size === previous) break; // stabilised
+					previous = retryRefs.size;
+					upstreamModels = [...retryRefs].sort();
+				}
+			}
 		} catch {
 			/* keep empty list */
 		}
@@ -165,7 +222,7 @@
 		return out;
 	}
 
-	async function runJob(opts: { history: Message[]; nextUser: string | null }) {
+	async function runJob(opts: { history: Message[]; nextUser: string | null; overrideModel?: string }) {
 		if (!activeSessionId) return;
 		streaming = true;
 		streamBuffer = '';
@@ -174,7 +231,7 @@
 			const job = await api<{ id: string }>(`/v1/sessions/${activeSessionId}/jobs`, {
 				method: 'POST',
 				body: {
-					model: activeSession?.model || defaultModel,
+					model: opts.overrideModel || activeSession?.model || defaultModel,
 					messages: toAnthropicMessages(opts.history, opts.nextUser),
 					max_tokens: 4096,
 					project_id: activeSession?.project_id || null
@@ -222,22 +279,35 @@
 				} catch (e) {
 					console.warn('persist assistant message failed', e);
 				}
+				const localMsgId = `local-${Date.now()}`;
 				messages = [
 					...messages,
 					{
-						id: `local-${Date.now()}`,
+						id: localMsgId,
 						session_id: activeSessionId!,
 						role: 'assistant',
 						content: streamBuffer,
 						created_at: new Date().toISOString()
 					}
 				];
+				// Persist thinking buffer so it survives stream-end.
+				if (thinkingBuffer.trim()) {
+					thinkings = new Map(thinkings).set(localMsgId, thinkingBuffer.trim());
+				}
 			}
 
 			// Auto-rename session on first turn if title is still default.
 			if ((activeSession?.title || '').match(/^(New chat|Untitled|)$/)) {
 				try {
-					await api(`/v1/sessions/${activeSessionId}/auto-rename`, { method: 'POST' });
+					const firstUser = messages.find((m) => m.role === 'user');
+					const firstAssistant = messages.find((m) => m.role === 'assistant');
+					await api(`/v1/sessions/${activeSessionId}/auto-rename`, {
+						method: 'POST',
+						body: {
+							first_user_message: firstUser?.content ?? '',
+							first_assistant_message: firstAssistant?.content ?? ''
+						}
+					});
 					const fresh = await api<Session>(`/v1/sessions/${activeSessionId}`);
 					if (fresh.title && activeSession) {
 						activeSession = { ...activeSession, title: fresh.title };
@@ -289,7 +359,7 @@
 		await runJob({ history: messages.slice(0, -1), nextUser: text });
 	}
 
-	async function regenerate(msgId: string) {
+	async function regenerate(msgId: string, overrideModel?: string) {
 		if (streaming) return;
 		const idx = messages.findIndex((m) => m.id === msgId);
 		if (idx < 0) return;
@@ -308,7 +378,8 @@
 			/* tolerate — may be a local-only id */
 		}
 		messages = messages.slice(0, idx);
-		await runJob({ history: messages.slice(0, userIdx), nextUser: userText });
+		regenPopover = { msgId: null, x: 0, y: 0 };
+		await runJob({ history: messages.slice(0, userIdx), nextUser: userText, overrideModel });
 	}
 
 	function copyMessage(content: string) {
@@ -370,7 +441,26 @@
 
 	onMount(async () => {
 		await Promise.all([loadSessions(), loadProjects(), checkVoice(), loadDefaultModel(), loadUpstreamModels()]);
+		// If we navigated from the projects page with a "Start chat" action,
+		// select the freshly created session.
+		if (typeof window !== 'undefined') {
+			const selectId = sessionStorage.getItem('companion.selectSession');
+			if (selectId) {
+				sessionStorage.removeItem('companion.selectSession');
+				// Wait a tick for sessions to be populated, then select
+				if (sessions.find((s: Session) => s.id === selectId)) {
+					await selectSession(selectId);
+				}
+			}
+		}
 	});
+
+	// Re-check voice availability on focus so the mic button appears
+	// after the server env is changed without a full page reload.
+	function onFocus() {
+		checkVoice();
+		loadUpstreamModels();
+	}
 
 	// Group sessions by their linked project so the sidebar mirrors the
 	// vanilla UI: pinned project sections at the top, unlinked chats
@@ -417,6 +507,7 @@
 	}
 </script>
 
+<svelte:window onfocus={onFocus} />
 <div class="chat-shell">
 	<aside class="sessions-pane">
 		<div class="sessions-header">
@@ -440,12 +531,15 @@
 						<button
 							class="btn btn-ghost btn-icon session-delete"
 							type="button"
-							onclick={(e) => {
+							onmousedown={(e) => {
+								// mousedown fires before click — prevents the
+								// parent <div role=button> from swallowing the
+								// event in WebKit where click fires on the
+								// parent before the child handler.
 								e.stopPropagation();
 								e.preventDefault();
 								deleteSession(s.id);
 							}}
-							onpointerdown={(e) => e.stopPropagation()}
 							aria-label="Delete session"
 						>
 							<Trash2 size={12} strokeWidth={2} />
@@ -507,7 +601,10 @@
 							<span class="msg-time">{fmtTime(m.created_at)}</span>
 							<button class="btn btn-ghost btn-icon" type="button" onclick={() => copyMessage(m.content)} title="Copy" aria-label="Copy"><Copy size={12} strokeWidth={2} /></button>
 							{#if m.role === 'assistant'}
-								<button class="btn btn-ghost btn-icon" type="button" onclick={() => regenerate(m.id)} title="Regenerate" aria-label="Regenerate" disabled={streaming}>
+								<button class="btn btn-ghost btn-icon" type="button" onclick={(e) => {
+									const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+									regenPopover = { msgId: m.id, x: rect.left, y: rect.bottom + 4 };
+								}} title="Regenerate" aria-label="Regenerate" disabled={streaming}>
 									<RotateCcw size={12} strokeWidth={2} />
 								</button>
 							{/if}
@@ -515,11 +612,20 @@
 					</header>
 					<div class="msg-body">
 						{#if m.role === 'assistant'}
-							<ChatBody content={m.content} />
+							<ChatBody content={m.content} onPreviewFile={previewFile} />
 						{:else}
 							{m.content}
 						{/if}
 					</div>
+					{#if m.role === 'assistant' && thinkings.has(m.id)}
+						<details class="thinking-block" style="margin-top: 6px">
+							<summary>
+								<ChevronDown size={12} strokeWidth={2} />
+								Thinking
+							</summary>
+							<div class="thinking-body">{thinkings.get(m.id)}</div>
+						</details>
+					{/if}
 				</article>
 			{/each}
 
@@ -584,6 +690,49 @@
 		</div>
 	</section>
 </div>
+
+<!-- Regenerate model picker popover -->
+{#if regenPopover.msgId}
+	<div
+		class="regen-popover-backdrop"
+		onclick={() => { regenPopover = { msgId: null, x: 0, y: 0 }; }}
+		onkeydown={() => {}}
+		role="dialog"
+	>
+	</div>
+	<div
+		class="regen-popover"
+		style="left: {regenPopover.x}px; top: {regenPopover.y}px"
+	>
+		<div class="regen-popover-title">Regenerate with</div>
+		<button class="regen-popover-item" onclick={() => regenerate(regenPopover.msgId!)}
+			>{activeSession?.model || defaultModel}
+			<span class="regen-popover-hint">current</span>
+		</button>
+		{#each upstreamModels as m (m)}
+			<button class="regen-popover-item" onclick={() => regenerate(regenPopover.msgId!, m)}>
+				{m}
+			</button>
+		{/each}
+	</div>
+{/if}
+
+<!-- File preview panel (slide-in from right) -->
+{#if filePreview.open}
+	<div class="file-preview">
+		<div class="file-preview-header">
+			<span class="mono truncate" title={filePreview.path}>{filePreview.path}</span>
+			<button class="btn btn-ghost btn-icon" type="button" onclick={closePreview} title="Close">&times;</button>
+		</div>
+		<div class="file-preview-body">
+			{#if filePreview.loading}
+				<span class="spinner"></span> Loading…
+			{:else}
+				<pre class="file-preview-content">{filePreview.content}</pre>
+			{/if}
+		</div>
+	</div>
+{/if}
 
 <style>
 	.chat-shell {
@@ -772,5 +921,82 @@
 	@keyframes pulse {
 		0%, 100% { opacity: 1; }
 		50% { opacity: 0.5; }
+	}
+	.regen-popover-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 999;
+	}
+	.regen-popover {
+		position: fixed;
+		z-index: 1000;
+		background: var(--bg-card);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+		max-height: 320px;
+		overflow-y: auto;
+		min-width: 240px;
+	}
+	.regen-popover-title {
+		padding: 8px 12px;
+		font-size: 11px;
+		color: var(--fg-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		border-bottom: 1px solid var(--border);
+	}
+	.regen-popover-item {
+		display: block;
+		width: 100%;
+		text-align: left;
+		padding: 6px 12px;
+		font-size: 12px;
+		color: var(--fg);
+		background: transparent;
+		border: none;
+		cursor: pointer;
+		font-family: ui-monospace, monospace;
+	}
+	.regen-popover-item:hover {
+		background: var(--bg-hover);
+	}
+	.regen-popover-hint {
+		font-size: 10px;
+		color: var(--fg-dim);
+		margin-left: 6px;
+	}
+	.file-preview {
+		position: fixed;
+		right: 0;
+		top: 0;
+		bottom: 0;
+		width: 420px;
+		background: var(--bg-card);
+		border-left: 1px solid var(--border);
+		box-shadow: -4px 0 16px rgba(0, 0, 0, 0.15);
+		display: flex;
+		flex-direction: column;
+		z-index: 100;
+	}
+	.file-preview-header {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		padding: var(--sp-3) var(--sp-4);
+		border-bottom: 1px solid var(--border);
+		font-size: 12px;
+	}
+	.file-preview-body {
+		flex: 1;
+		overflow: auto;
+		padding: var(--sp-3) var(--sp-4);
+	}
+	.file-preview-content {
+		font-family: ui-monospace, monospace;
+		font-size: 12px;
+		white-space: pre-wrap;
+		word-break: break-all;
+		margin: 0;
 	}
 </style>

@@ -4,12 +4,13 @@
 	import { toasts } from '$lib/stores.svelte';
 	import type { SettingsSnapshot } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
-	import { Pencil, Wand2, X, Check } from 'lucide-svelte';
+	import { Pencil, Wand2, X, Check, Download } from 'lucide-svelte';
 	import EditableRow from './EditableRow.svelte';
 
 	let data = $state<SettingsSnapshot | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let updateChecking = $state(false);
 
 	async function load() {
 		loading = true;
@@ -24,7 +25,44 @@
 		}
 	}
 
-	onMount(load);
+	async function setupUpdater() {
+		try {
+			const { listen } = await import('@tauri-apps/api/event');
+			const unlisten = await listen<{ phase: string; message: string; progress_pct?: number }>(
+				'updater://status',
+				(event) => {
+					const p = event.payload;
+					const level = p.phase === 'error' ? 'error' : 'ok';
+					toasts.show(p.message, level);
+					if (p.phase === 'checking') {
+						updateChecking = true;
+					}
+					if (p.phase === 'up-to-date' || p.phase === 'error' || p.phase === 'restarting') {
+						updateChecking = false;
+					}
+				}
+			);
+			return unlisten;
+		} catch {
+			// Not running in Tauri — updater not available
+		}
+	}
+
+	async function checkForUpdate() {
+		try {
+			const { invoke } = await import('@tauri-apps/api/core');
+			updateChecking = true;
+			await invoke('check_update');
+		} catch (e) {
+			updateChecking = false;
+			toasts.show(`Update check failed: ${(e as Error).message}`, 'error');
+		}
+	}
+
+	onMount(async () => {
+		await load();
+		setupUpdater();
+	});
 
 	function makeRows(d: SettingsSnapshot) {
 		return {
@@ -63,6 +101,11 @@
 				{ label: 'SUPABASE_URL', value: '', envKey: 'SUPABASE_URL' },
 				{ label: 'SUPABASE_SERVICE_ROLE_KEY', value: '', envKey: 'SUPABASE_SERVICE_ROLE_KEY', secret: true },
 				{ label: 'OPENAI_API_KEY', value: '', envKey: 'OPENAI_API_KEY', secret: true }
+			],
+			voice: [
+				{ label: 'enabled', value: String(d.voice.enabled), envKey: 'VOICE_NOTE_ENABLED', type: 'boolean' as const },
+				{ label: 'binary', value: d.voice.whisper_binary ?? '', envKey: 'WHISPER_BINARY' },
+				{ label: 'model', value: d.voice.whisper_model ?? '', envKey: 'WHISPER_MODEL' }
 			]
 		};
 	}
@@ -81,6 +124,14 @@
 
 <PageHeader title="Settings" sub="non-sensitive snapshot of the running proxy">
 	{#snippet actions()}
+		<button class="btn btn-sm" type="button" onclick={checkForUpdate} disabled={updateChecking}>
+			{#if updateChecking}
+				<span class="spinner"></span>
+			{:else}
+				<Download size={14} strokeWidth={2} />
+			{/if}
+			Check for updates
+		</button>
 		<button class="btn btn-primary" type="button">
 			<Wand2 size={14} strokeWidth={2} /> Setup wizard
 		</button>
@@ -155,6 +206,17 @@
 				<table class="table">
 					<tbody>
 						{#each rows.tokens as r (r.envKey)}
+							<EditableRow row={r} onSave={onSaveRow} />
+						{/each}
+					</tbody>
+				</table>
+			</div>
+
+			<div class="card">
+				<div class="card-title">Voice</div>
+				<table class="table">
+					<tbody>
+						{#each rows.voice as r (r.envKey)}
 							<EditableRow row={r} onSave={onSaveRow} />
 						{/each}
 					</tbody>

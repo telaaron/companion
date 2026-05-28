@@ -5,7 +5,21 @@
 	import type { Project } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
 	import FolderPicker from '$lib/FolderPicker.svelte';
-	import { Plus, Trash2, FolderOpen, FolderSearch, Pin, X } from 'lucide-svelte';
+	import { Plus, Trash2, FolderOpen, FolderSearch, Pin, X, MessageSquare } from 'lucide-svelte';
+	import { goto } from '$app/navigation';
+	import { base } from '$app/paths';
+
+	const COLOR_PRESETS = [
+		{ label: 'None', value: '' },
+		{ label: 'Indigo', value: '#6366f1' },
+		{ label: 'Red', value: '#ef4444' },
+		{ label: 'Amber', value: '#f59e0b' },
+		{ label: 'Green', value: '#22c55e' },
+		{ label: 'Teal', value: '#14b8a6' },
+		{ label: 'Cyan', value: '#06b6d4' },
+		{ label: 'Pink', value: '#ec4899' },
+		{ label: 'Violet', value: '#8b5cf6' }
+	];
 
 	interface Memory {
 		id: string;
@@ -23,9 +37,21 @@
 	let newName = $state('');
 	let newWorkspace = $state('');
 	let newDescription = $state('');
+	let newColor = $state('');
 	let pickerOpen = $state(false);
 	let pickerTargetId = $state<string | 'new' | null>(null);
 	let memoryDrafts = $state<Record<string, { title: string; body: string }>>({});
+
+	// Custom confirm modal — native window.confirm is blocked in Tauri-WebKit.
+	let confirmState = $state<{ open: boolean; message: string; resolve: ((v: boolean) => void) | null }>(
+		{ open: false, message: '', resolve: null }
+	);
+
+	function customConfirm(message: string): Promise<boolean> {
+		return new Promise((resolve) => {
+			confirmState = { open: true, message, resolve };
+		});
+	}
 
 	async function load() {
 		loading = true;
@@ -57,13 +83,15 @@
 				body: {
 					name: newName.trim(),
 					workspace_path: newWorkspace.trim() || null,
-					description: newDescription.trim() || null
+					description: newDescription.trim() || null,
+					color: newColor || null
 				}
 			});
 			toasts.show(`Project created`, 'ok');
 			newName = '';
 			newWorkspace = '';
 			newDescription = '';
+			newColor = '';
 			creating = false;
 			await load();
 		} catch (e) {
@@ -72,7 +100,7 @@
 	}
 
 	async function remove(id: string) {
-		if (!confirm('Delete this project?')) return;
+		if (!(await customConfirm('Delete this project?'))) return;
 		try {
 			await api(`/v1/projects/${id}`, { method: 'DELETE' });
 			await load();
@@ -134,6 +162,23 @@
 		pickerTargetId = null;
 	}
 
+	async function startChat(p: Project) {
+		try {
+			const res = await api<{ id: string }>('/v1/sessions', {
+				method: 'POST',
+				body: { project_id: p.id, title: `New chat in ${p.name}` }
+			});
+			toasts.show('Session created', 'ok');
+			// Store the new session id so the chat page can select it
+			if (typeof window !== 'undefined') {
+				sessionStorage.setItem('companion.selectSession', res.id);
+			}
+			await goto(base + '/');
+		} catch (e) {
+			toasts.show(`Start chat failed: ${(e as Error).message}`, 'error');
+		}
+	}
+
 	onMount(load);
 </script>
 
@@ -165,6 +210,21 @@
 						<button class="btn" type="button" onclick={() => openPicker('new')}><FolderSearch size={14} strokeWidth={2} /> Pick…</button>
 					</div>
 				</div>
+				<div>
+					<div class="form-label">Color</div>
+					<div class="color-pills">
+						{#each COLOR_PRESETS as c}
+							<button
+								class="color-pill"
+								class:selected={newColor === c.value}
+								style={c.value ? `background: ${c.value}; border-color: ${c.value}` : ''}
+								onclick={() => (newColor = c.value)}
+								title={c.label}
+								type="button"
+							></button>
+						{/each}
+					</div>
+				</div>
 				<div class="row gap-2">
 					<button class="btn btn-primary" onclick={create}>Create</button>
 					<button class="btn btn-ghost" onclick={() => (creating = false)}>Cancel</button>
@@ -180,12 +240,21 @@
 	{:else}
 		<div class="col" style="gap: var(--sp-4)">
 			{#each projects as p (p.id)}
-				<div class="card">
+				<div class="card" style={p.color ? `border-left: 3px solid ${p.color}` : ''}>
 					<div class="row justify-between align-center" style="margin-bottom: var(--sp-3)">
 						<h3 style="margin: 0; font-size: var(--fs-16)">{p.name}</h3>
-						<button class="btn btn-ghost btn-icon" type="button" onclick={() => remove(p.id)} title="Delete project">
-							<Trash2 size={14} strokeWidth={2} />
-						</button>
+						<div class="row gap-2">
+							<button
+								class="btn btn-primary btn-sm"
+								type="button"
+								onclick={() => startChat(p)}
+							>
+								<MessageSquare size={12} strokeWidth={2} /> Start chat
+							</button>
+							<button class="btn btn-ghost btn-icon" type="button" onclick={() => remove(p.id)} title="Delete project">
+								<Trash2 size={14} strokeWidth={2} />
+							</button>
+						</div>
 					</div>
 
 					<div class="grid-2col">
@@ -210,6 +279,22 @@
 								/>
 								<button class="btn btn-sm" onclick={() => openPicker(p.id)} title="Pick folder"><FolderSearch size={14} strokeWidth={2} /></button>
 							</div>
+						</div>
+					</div>
+
+					<div style="margin-top: var(--sp-3)">
+						<div class="form-label">Color</div>
+						<div class="color-pills">
+							{#each COLOR_PRESETS as c}
+								<button
+									class="color-pill"
+									class:selected={(p.color || '') === c.value}
+									style={c.value ? `background: ${c.value}; border-color: ${c.value}` : ''}
+									onclick={() => updateProject(p.id, { color: c.value || undefined })}
+									title={c.label}
+									type="button"
+								></button>
+							{/each}
 						</div>
 					</div>
 
@@ -279,6 +364,19 @@
 	onClose={() => { pickerOpen = false; pickerTargetId = null; }}
 />
 
+<!-- Confirm modal -->
+{#if confirmState.open}
+	<div class="modal-backdrop" onclick={() => { confirmState.resolve?.(false); confirmState = { open: false, message: '', resolve: null }; }} role="dialog">
+		<div class="modal-card" onclick={(e) => e.stopPropagation()}>
+			<p style="margin: 0 0 var(--sp-4)">{confirmState.message}</p>
+			<div class="row gap-2 justify-end">
+				<button class="btn" type="button" onclick={() => { confirmState.resolve?.(false); confirmState = { open: false, message: '', resolve: null }; }}>Cancel</button>
+				<button class="btn btn-primary" type="button" onclick={() => { confirmState.resolve?.(true); confirmState = { open: false, message: '', resolve: null }; }}>OK</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
 <style>
 	.grid-2col {
 		display: grid;
@@ -306,5 +404,44 @@
 		background: var(--bg-input);
 		border-radius: var(--radius);
 		font-size: 13px;
+	}
+	.color-pills {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	.color-pill {
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		border: 2px solid var(--border);
+		background: var(--bg-input);
+		cursor: pointer;
+		transition: transform 0.1s, box-shadow 0.1s;
+		padding: 0;
+	}
+	.color-pill:hover {
+		transform: scale(1.15);
+	}
+	.color-pill.selected {
+		box-shadow: 0 0 0 2px var(--fg), 0 0 0 4px var(--border);
+		transform: scale(1.1);
+	}
+	.modal-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 1000;
+	}
+	.modal-card {
+		background: var(--bg-card);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		padding: var(--sp-4);
+		min-width: 300px;
+		max-width: 420px;
 	}
 </style>

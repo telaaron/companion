@@ -3,6 +3,8 @@
 	import { api } from '$lib/api';
 	import { toasts } from '$lib/stores.svelte';
 	import PageHeader from '$lib/PageHeader.svelte';
+	import { Search, FolderKanban } from 'lucide-svelte';
+	import { diffLines, type Change } from 'diff';
 
 	interface FileEdit {
 		id: number;
@@ -11,21 +13,29 @@
 		path: string;
 		bytes_delta: number;
 		project_id?: string;
+		project_name?: string;
 		session_id?: string;
 		metadata?: string;
 	}
 
 	let edits = $state<FileEdit[]>([]);
+	let projects = $state<Array<{ id: string; name: string }>>([]);
 	let loading = $state(true);
 	let active = $state<FileEdit | null>(null);
 	let preview = $state<string>('');
+	let diffs = $state<Change[]>([]);
 	let previewLoading = $state(false);
+	let searchQuery = $state('');
 
 	async function load() {
 		loading = true;
 		try {
-			const data = await api<{ edits: FileEdit[] }>('/v1/files');
-			edits = data.edits || [];
+			const [editsData, projectsData] = await Promise.all([
+				api<{ edits: FileEdit[] }>('/v1/files', { query: { limit: 500 } }),
+				api<{ projects: Array<{ id: string; name: string }> }>('/v1/projects')
+			]);
+			edits = (editsData.edits || []);
+			projects = (projectsData.projects || []);
 		} catch (e) {
 			toasts.show(`Load failed: ${(e as Error).message}`, 'error');
 		} finally {
@@ -36,18 +46,77 @@
 	async function openEdit(e: FileEdit) {
 		active = e;
 		preview = '';
+		diffs = [];
 		previewLoading = true;
 		try {
 			const data = await api<{ content: string }>(`/v1/preview/file`, {
 				query: { path: e.path, session_id: e.session_id || '' }
 			});
-			preview = data.content || '';
+			const current = data.content || '';
+
+			// Try to compute a diff from metadata
+			let meta: Record<string, unknown> = {};
+			try {
+				meta = e.metadata ? JSON.parse(e.metadata) : {};
+			} catch { /* ignore */ }
+
+			const beforeText = typeof meta.before_text === 'string' && meta.before_text ? meta.before_text : null;
+			if (beforeText && current) {
+				diffs = diffLines(beforeText, current);
+			}
+			preview = current;
 		} catch (err) {
 			preview = `(unable to load preview: ${(err as Error).message})`;
 		} finally {
 			previewLoading = false;
 		}
 	}
+
+	function projName(pid?: string): string {
+		if (!pid) return 'No project';
+		const p = projects.find((p) => p.id === pid);
+		return p?.name ?? 'Unknown';
+	}
+
+	function projColor(pid?: string): string {
+		if (!pid) return '';
+		const p = projects.find((p) => p.id === pid) as Record<string, unknown> | undefined;
+		return (p?.color as string) || '';
+	}
+
+	// Group edits by project_id, then sort each group by ts desc
+	let grouped = $derived.by(() => {
+		type Bucket = { projectId: string | null; projectName: string; color: string; edits: FileEdit[] };
+		const buckets = new Map<string | null, Bucket>();
+		for (const e of filtered) {
+			const pid = e.project_id || null;
+			if (!buckets.has(pid)) {
+				buckets.set(pid, {
+					projectId: pid,
+					projectName: projName(pid ?? undefined),
+					color: projColor(pid ?? undefined),
+					edits: []
+				});
+			}
+			buckets.get(pid)!.edits.push(e);
+		}
+		// Sort: projects with edits first, no-project last
+		const sorted = [...buckets.values()];
+		sorted.sort((a, b) => {
+			if (!a.projectId && b.projectId) return 1;
+			if (a.projectId && !b.projectId) return -1;
+			return a.projectName.localeCompare(b.projectName);
+		});
+		return sorted;
+	});
+
+	let filtered = $derived.by(() => {
+		if (!searchQuery.trim()) return edits;
+		const q = searchQuery.toLowerCase().trim();
+		return edits.filter(
+			(e) => e.path.toLowerCase().includes(q) || e.op.toLowerCase().includes(q)
+		);
+	});
 
 	function fmtTime(ts: number): string {
 		try { return new Date(ts * 1000).toLocaleString(); } catch { return ''; }
@@ -63,32 +132,75 @@
 <PageHeader title="File edits" sub={`${edits.length} recorded operations`} />
 
 <div class="page-body" style="display: grid; grid-template-columns: 360px 1fr; gap: var(--sp-4); height: calc(100vh - 110px)">
-	<div class="card" style="overflow-y: auto; padding: var(--sp-2)">
-		{#if loading}<span class="spinner"></span>
-		{:else if edits.length === 0}<div class="empty">No file edits recorded yet</div>
+	<!-- Left panel -->
+	<div class="card" style="overflow-y: auto; padding: var(--sp-2); display: flex; flex-direction: column">
+		<div style="margin-bottom: var(--sp-2); position: relative">
+			<Search size={14} strokeWidth={2} style="position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--fg-muted); pointer-events: none" />
+			<input
+				class="form-input"
+				style="padding-left: 30px"
+				placeholder="Filter by path or op…"
+				bind:value={searchQuery}
+			/>
+		</div>
+
+		{#if loading}
+			<div class="empty"><span class="spinner"></span></div>
+		{:else if edits.length === 0}
+			<div class="empty">No file edits recorded yet</div>
+		{:else if filtered.length === 0}
+			<div class="empty">No edits match "{searchQuery}"</div>
 		{:else}
-			{#each edits as e (e.id)}
-				<button
-					class="edit-row"
-					class:active={active?.id === e.id}
-					type="button"
-					onclick={() => openEdit(e)}
-				>
-					<div class="row align-center gap-2" style="margin-bottom: 2px">
-						<span class="pill">{e.op}</span>
-						<span class="mono" style="font-size: 11px; color: var(--fg-muted)">{fmtBytes(e.bytes_delta)}</span>
-					</div>
-					<div class="mono truncate" style="font-size: 12px">{e.path}</div>
-					<div style="font-size: 11px; color: var(--fg-muted)">{fmtTime(e.ts)}</div>
-				</button>
+			{#each grouped as bucket (bucket.projectId ?? '__none__')}
+				<div class="section-label" style={bucket.color ? `border-left: 3px solid ${bucket.color}; padding-left: 8px; margin: var(--sp-2) 4px var(--sp-1); font-size: 11px; font-weight: 600; color: var(--fg-muted); text-transform: uppercase; display: flex; align-items: center; gap: 6px` : `margin: var(--sp-2) 4px var(--sp-1); font-size: 11px; font-weight: 600; color: var(--fg-muted); text-transform: uppercase; display: flex; align-items: center; gap: 6px`}>
+					<FolderKanban size={12} strokeWidth={2} />
+					{bucket.projectName}
+				</div>
+				{#each bucket.edits as e (e.id)}
+					<button
+						class="edit-row"
+						class:active={active?.id === e.id}
+						type="button"
+						onclick={() => openEdit(e)}
+					>
+						<div class="row align-center gap-2" style="margin-bottom: 2px">
+							<span class="pill" class:pill-accent={e.op === 'edit'} class:pill-ok={e.op === 'write' || e.op === 'create'} class:pill-error={e.op === 'delete'}>{e.op}</span>
+							<span class="mono" style="font-size: 11px; color: var(--fg-muted)">{fmtBytes(e.bytes_delta)}</span>
+						</div>
+						<div class="mono truncate" style="font-size: 12px">{e.path}</div>
+						<div style="font-size: 11px; color: var(--fg-muted)">{fmtTime(e.ts)}</div>
+					</button>
+				{/each}
 			{/each}
 		{/if}
 	</div>
+
+	<!-- Right panel -->
 	<div class="card" style="overflow: hidden; display: flex; flex-direction: column">
 		{#if active}
 			<div class="card-title mono" style="margin-bottom: var(--sp-2)">{active.path}</div>
 			{#if previewLoading}
 				<div class="empty"><span class="spinner"></span> Loading preview…</div>
+			{:else if diffs.length > 0}
+				<div class="diff-viewer" style="overflow: auto; flex: 1; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all">
+					{#each diffs as hunk, i (i)}
+						{#each hunk.value.split('\n') as line, j}
+							{#if line !== '' || j < hunk.value.split('\n').length - 1}
+								<div
+									class="diff-line"
+									class:diff-add={hunk.added}
+									class:diff-rem={hunk.removed}
+									style={hunk.added ? 'background: rgba(34, 197, 94, 0.1)' : hunk.removed ? 'background: rgba(239, 68, 68, 0.1)' : ''}
+								>
+									<span class="diff-sign" style="width: 20px; display: inline-block; text-align: center; color: var(--fg-dim); user-select: none; flex-shrink: 0">
+										{hunk.added ? '+' : hunk.removed ? '−' : ' '}
+									</span>
+									<span>{line}</span>
+								</div>
+							{/if}
+						{/each}
+					{/each}
+				</div>
 			{:else}
 				<pre style="font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 0; overflow: auto; flex: 1">{preview}</pre>
 			{/if}
@@ -113,4 +225,10 @@
 	}
 	.edit-row:hover { background: var(--bg-hover); }
 	.edit-row.active { background: var(--bg-active); }
+	.diff-line {
+		display: flex;
+	}
+	.diff-sign {
+		flex-shrink: 0;
+	}
 </style>

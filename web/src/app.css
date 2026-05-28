@@ -496,3 +496,27 @@ a:hover {
 		transform: rotate(360deg);
 	}
 }
+
+/* ============================================================ Search hint */
+
+.search-hint {
+	text-align: center;
+	font-size: var(--fs-12);
+	color: var(--fg-dim);
+	margin-top: var(--sp-2);
+	padding: 4px;
+	cursor: pointer;
+	border-radius: var(--radius);
+	transition: color 0.15s;
+}
+.search-hint:hover {
+	color: var(--fg-muted);
+}
+.search-hint kbd {
+	padding: 1px 5px;
+	font-family: inherit;
+	font-size: 11px;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	background: var(--bg-input);
+}

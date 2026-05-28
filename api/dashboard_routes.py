@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 from config.settings import Settings
 from providers.registry import ProviderRegistry
 
-from . import build_info, datastore
+from . import datastore
 from .dependencies import CurrentUserId, get_settings, require_api_key
 from .pricing import known_image_prices, known_token_prices, pricing_snapshot
 
@@ -1207,6 +1207,37 @@ async def upstream_models_route(
 _PROCESS_START = time.time()
 
 
+def _read_build_info() -> dict[str, str]:
+    """Return ``{sha, ts}`` by parsing the generated ``api/build_info.py``.
+
+    Falls back to ``{"sha": "dev", "ts": ""}`` when the file is missing
+    or unparseable — e.g. inside a PyInstaller bundle where the relative
+    import path differs.
+    """
+    import re
+    from pathlib import Path as _Path
+
+    candidates = [
+        _Path(__file__).parent / "build_info.py",
+        _Path(sys.executable).parent / "api" / "build_info.py",
+    ]
+    if getattr(sys, "frozen", False):
+        candidates.insert(0, _Path(sys._MEIPASS) / "api" / "build_info.py")  # type: ignore[attr-defined]
+
+    for p in candidates:
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            sha_m = re.search(r'GIT_SHA\s*=\s*"([^"]+)"', text)
+            ts_m = re.search(r'BUILD_TIMESTAMP\s*=\s*"([^"]+)"', text)
+            return {
+                "sha": sha_m.group(1) if sha_m else "dev",
+                "ts": ts_m.group(1) if ts_m else "",
+            }
+        except (OSError, FileNotFoundError):
+            continue
+    return {"sha": "dev", "ts": ""}
+
+
 @dashboard_router.get("/v1/settings")
 async def settings_route(
     settings: Settings = Depends(get_settings), _auth=Depends(require_api_key)
@@ -1249,10 +1280,7 @@ async def settings_route(
         "port": settings.port,
         "anthropic_auth_token_set": bool(settings.anthropic_auth_token),
         "env_file": str(_ENV_FILE),
-        "build": {
-            "sha": getattr(build_info, "GIT_SHA", "dev"),
-            "ts": getattr(build_info, "BUILD_TIMESTAMP", ""),
-        },
+        "build": _read_build_info(),
         "process": {
             "pid": os.getpid(),
             "uptime_s": int(time.time() - _PROCESS_START),

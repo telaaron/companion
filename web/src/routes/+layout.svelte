@@ -17,6 +17,7 @@
 		Lightbulb,
 		Settings as SettingsIcon
 	} from 'lucide-svelte';
+	import CommandPalette from '$lib/CommandPalette.svelte';
 	import '../app.css';
 
 	const NAV = [
@@ -35,6 +36,7 @@
 	] as const;
 
 	let { children } = $props();
+	let paletteOpen = $state(false);
 
 	onMount(() => {
 		document.documentElement.setAttribute('data-theme', theme.value);
@@ -81,6 +83,7 @@
 			<button class="theme" type="button" onclick={() => theme.toggle()}>
 				{theme.value === 'dark' ? '☼ light' : '☾ dark'}
 			</button>
+			<div class="search-hint" onclick={() => (paletteOpen = true)}><kbd>⌘K</kbd> Search</div>
 		</div>
 	</aside>
 
@@ -88,6 +91,8 @@
 		{@render children()}
 	</main>
 </div>
+
+<CommandPalette bind:open={paletteOpen} />
 
 {#if toasts.items.length > 0}
 	<div class="toast-stack">

@@ -12,6 +12,7 @@ Legacy ``~/.cache/free-claude-code/data.sqlite3`` is migrated on first
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import threading
@@ -1098,6 +1099,299 @@ def memory_delete_path(path: str) -> None:
             )
     except Exception as exc:
         logger.warning("MEMORY: delete_path failed ({})", exc)
+
+
+# ============================================================ Unified search
+
+
+def _fts_safe_query(query: str) -> str:
+    """Wrap a user query for FTS5 MATCH. Escapes double quotes and
+    uses phrase search by default for better precision."""
+    safe = query.replace('"', '""')
+    return f'"{safe}"'
+
+
+def _recency_score(ts_ms: int, now_ms: int, weight: float = 40.0) -> float:
+    """Score contribution from recency: newer items get more points.
+    Formula: weight / (1 + hours_ago / 24). Max = weight, decays to
+    0 over roughly a month."""
+    hours = max(0, (now_ms - ts_ms) / (1000 * 60 * 60))
+    return weight / (1.0 + hours / 24.0)
+
+
+def search_all(
+    query: str,
+    *,
+    kinds: list[str] | None = None,
+    limit: int = 50,
+    user_id: str = "default",
+) -> list[dict[str, Any]]:
+    """Unified search across all companion data kinds.
+
+    Returns a list of dicts with keys: kind, title, subtitle, navigate_url,
+    score, ts, ref. Results are sorted by score descending and capped at
+    ``limit``.
+    """
+    safe_q = (query or "").strip()
+    if not safe_q:
+        return []
+
+    fts_q = _fts_safe_query(safe_q)
+    like_q = f"%{safe_q}%"
+    now_ms = _ts()
+    all_kinds = kinds or [
+        "message",
+        "file",
+        "session",
+        "project",
+        "memory",
+        "audit",
+        "file-edit",
+        "setting",
+        "routine",
+    ]
+    results: list[dict[str, Any]] = []
+
+    with _connect() as conn:
+        # ---- messages (via memory_fts) --------------------------------
+        if "message" in all_kinds:
+            try:
+                rows = conn.execute(
+                    "SELECT kind, title, body, ref, project_id, ts, rank"
+                    " FROM memory_fts WHERE kind='message' AND memory_fts MATCH ?"
+                    " ORDER BY rank LIMIT ?",
+                    (fts_q, limit),
+                ).fetchall()
+                if rows:
+                    # batch-lookup session_ids from messages table
+                    msg_ids = [r["ref"] for r in rows]
+                    placeholders = ",".join("?" for _ in msg_ids)
+                    msg_rows = conn.execute(
+                        f"SELECT id, session_id FROM messages WHERE id IN ({placeholders})",
+                        msg_ids,
+                    ).fetchall()
+                    sid_map = {row["id"]: row["session_id"] for row in msg_rows}
+                    for r in rows:
+                        sid = sid_map.get(r["ref"], "")
+                        rank_val = float(r["rank"])
+                        fts_score = 60.0 / (1.0 + rank_val)
+                        recency = _recency_score(int(r["ts"]), now_ms)
+                        results.append(
+                            {
+                                "kind": "message",
+                                "title": r["title"] or "message",
+                                "subtitle": (r["body"] or "")[:160],
+                                "navigate_url": f"/ui/?session={sid}",
+                                "score": round(fts_score + recency, 2),
+                                "ts": r["ts"],
+                                "ref": r["ref"],
+                            }
+                        )
+            except sqlite3.OperationalError:
+                pass  # malformed FTS query — skip this kind
+
+        # ---- files (via memory_fts) ------------------------------------
+        if "file" in all_kinds:
+            try:
+                rows = conn.execute(
+                    "SELECT kind, title, body, ref, project_id, ts, rank"
+                    " FROM memory_fts WHERE kind='file' AND memory_fts MATCH ?"
+                    " ORDER BY rank LIMIT ?",
+                    (fts_q, limit),
+                ).fetchall()
+                for r in rows:
+                    rank_val = float(r["rank"])
+                    fts_score = 60.0 / (1.0 + rank_val)
+                    recency = _recency_score(int(r["ts"]), now_ms)
+                    results.append(
+                        {
+                            "kind": "file",
+                            "title": r["title"] or r["ref"] or "file",
+                            "subtitle": (r["body"] or "")[:160],
+                            "navigate_url": "/ui/files",
+                            "score": round(fts_score + recency, 2),
+                            "ts": r["ts"],
+                            "ref": r["ref"],
+                        }
+                    )
+            except sqlite3.OperationalError:
+                pass
+
+        # ---- sessions (LIKE on title) ---------------------------------
+        if "session" in all_kinds:
+            rows = conn.execute(
+                "SELECT id, title, updated_at FROM sessions"
+                " WHERE user_id=? AND title LIKE ?"
+                " ORDER BY updated_at DESC LIMIT ?",
+                (user_id, like_q, limit),
+            ).fetchall()
+            for r in rows:
+                recency = _recency_score(int(r["updated_at"]), now_ms)
+                results.append(
+                    {
+                        "kind": "session",
+                        "title": r["title"] or "untitled",
+                        "subtitle": "Chat session",
+                        "navigate_url": f"/ui/?session={r['id']}",
+                        "score": round(50.0 + recency, 2),
+                        "ts": r["updated_at"],
+                        "ref": r["id"],
+                    }
+                )
+
+        # ---- projects (LIKE on name, description) ---------------------
+        if "project" in all_kinds:
+            rows = conn.execute(
+                "SELECT id, name, description, updated_at FROM projects"
+                " WHERE user_id=? AND (name LIKE ? OR description LIKE ?)"
+                " ORDER BY updated_at DESC LIMIT ?",
+                (user_id, like_q, like_q, limit),
+            ).fetchall()
+            for r in rows:
+                recency = _recency_score(int(r["updated_at"]), now_ms)
+                results.append(
+                    {
+                        "kind": "project",
+                        "title": r["name"],
+                        "subtitle": (r["description"] or "Project")[:160],
+                        "navigate_url": "/ui/projects",
+                        "score": round(50.0 + recency, 2),
+                        "ts": r["updated_at"],
+                        "ref": r["id"],
+                    }
+                )
+
+        # ---- project_memories (LIKE on content) -----------------------
+        if "memory" in all_kinds:
+            rows = conn.execute(
+                "SELECT id, content, created_at, project_id FROM project_memories"
+                " WHERE user_id=? AND content LIKE ?"
+                " ORDER BY created_at DESC LIMIT ?",
+                (user_id, like_q, limit),
+            ).fetchall()
+            for r in rows:
+                recency = _recency_score(int(r["created_at"]), now_ms)
+                results.append(
+                    {
+                        "kind": "memory",
+                        "title": "Project memory",
+                        "subtitle": (r["content"] or "")[:160],
+                        "navigate_url": "/ui/memory",
+                        "score": round(50.0 + recency, 2),
+                        "ts": r["created_at"],
+                        "ref": r["id"],
+                    }
+                )
+
+        # ---- audit_log (LIKE on event, detail, category) ---------------
+        if "audit" in all_kinds:
+            rows = conn.execute(
+                "SELECT id, ts, category, event, detail FROM audit_log"
+                " WHERE (event LIKE ? OR detail LIKE ? OR category LIKE ?)"
+                " AND (user_id=? OR user_id IS NULL)"
+                " ORDER BY ts DESC LIMIT ?",
+                (like_q, like_q, like_q, user_id, limit),
+            ).fetchall()
+            for r in rows:
+                recency = _recency_score(int(r["ts"]), now_ms)
+                results.append(
+                    {
+                        "kind": "audit",
+                        "title": f"{r['category']}: {r['event']}",
+                        "subtitle": (r["detail"] or "")[:160],
+                        "navigate_url": "/ui/audit",
+                        "score": round(50.0 + recency, 2),
+                        "ts": r["ts"],
+                        "ref": str(r["id"]),
+                    }
+                )
+
+        # ---- file_edits (LIKE on path) ---------------------------------
+        if "file-edit" in all_kinds:
+            rows = conn.execute(
+                "SELECT id, ts, op, path FROM file_edits"
+                " WHERE path LIKE ?"
+                " ORDER BY ts DESC LIMIT ?",
+                (like_q, limit),
+            ).fetchall()
+            for r in rows:
+                recency = _recency_score(int(r["ts"]), now_ms)
+                results.append(
+                    {
+                        "kind": "file-edit",
+                        "title": r["path"],
+                        "subtitle": f"{r['op']}",
+                        "navigate_url": "/ui/files",
+                        "score": round(50.0 + recency, 2),
+                        "ts": r["ts"],
+                        "ref": str(r["id"]),
+                    }
+                )
+
+        # ---- routines (LIKE on name, description) ----------------------
+        if "routine" in all_kinds:
+            rows = conn.execute(
+                "SELECT id, name, description, created_at FROM routines"
+                " WHERE user_id=? AND (name LIKE ? OR description LIKE ?)"
+                " ORDER BY created_at DESC LIMIT ?",
+                (user_id, like_q, like_q, limit),
+            ).fetchall()
+            for r in rows:
+                recency = _recency_score(int(r["created_at"]), now_ms)
+                results.append(
+                    {
+                        "kind": "routine",
+                        "title": r["name"],
+                        "subtitle": (r["description"] or "Scheduled routine")[:160],
+                        "navigate_url": "/ui/routines",
+                        "score": round(50.0 + recency, 2),
+                        "ts": r["created_at"],
+                        "ref": r["id"],
+                    }
+                )
+
+    # ---- settings / env (read env file) --------------------------------
+    if "setting" in all_kinds:
+        try:
+            env_path = Path.home() / ".config" / "companion" / ".env"
+            if env_path.is_file():
+                text = env_path.read_text(encoding="utf-8", errors="replace")
+                for line in text.splitlines():
+                    if not line.strip() or line.lstrip().startswith("#"):
+                        continue
+                    m = re.match(r"^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$", line)
+                    if not m:
+                        continue
+                    key, raw = m.group(1), m.group(2)
+                    value = raw.strip().strip('"').strip("'")
+                    if safe_q.lower() in key.lower() or safe_q.lower() in value.lower():
+                        # mask secrets for display
+                        is_secret = any(
+                            h in key.lower()
+                            for h in ("key", "token", "secret", "password")
+                        )
+                        display_value = (
+                            value[:4] + "•" * min(len(value) - 4, 12)
+                            if is_secret and len(value) > 4
+                            else value
+                        )
+                        results.append(
+                            {
+                                "kind": "setting",
+                                "title": key,
+                                "subtitle": display_value[:160],
+                                "navigate_url": "/ui/settings",
+                                "score": 55.0,  # fixed score — no recency for settings
+                                "ts": 0,
+                                "ref": key,
+                            }
+                        )
+        except Exception:
+            pass
+
+    # Sort by score descending, then by recency descending for ties
+    results.sort(key=lambda x: (x["score"], x["ts"]), reverse=True)
+    return results[:limit]
 
 
 # ============================================================ Project memories (pinned)

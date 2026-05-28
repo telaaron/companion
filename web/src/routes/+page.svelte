@@ -414,13 +414,13 @@
 			<div class="row gap-3 align-center" style="flex: 1; min-width: 0">
 				<h2 class="chat-title">{activeSession?.title || 'Chat'}</h2>
 			</div>
-			{#if activeSessionId && activeSession}
+			{#if activeSessionId}
 				<div class="row gap-2 align-center">
 					<label class="picker-label">
 						<span>Project</span>
 						<select
 							class="form-select"
-							value={activeSession.project_id || ''}
+							value={activeSession?.project_id || ''}
 							onchange={(e) => updateSessionField({ project_id: (e.currentTarget as HTMLSelectElement).value || null })}
 						>
 							<option value="">— None —</option>
@@ -433,11 +433,11 @@
 						<span>Model</span>
 						<select
 							class="form-select"
-							value={activeSession.model || defaultModel}
+							value={activeSession?.model || defaultModel}
 							onchange={(e) => updateSessionField({ model: (e.currentTarget as HTMLSelectElement).value })}
 						>
-							{#if !upstreamModels.includes(activeSession.model || defaultModel)}
-								<option value={activeSession.model || defaultModel}>{activeSession.model || defaultModel}</option>
+							{#if !upstreamModels.includes(activeSession?.model || defaultModel)}
+								<option value={activeSession?.model || defaultModel}>{activeSession?.model || defaultModel}</option>
 							{/if}
 							{#each upstreamModels as m (m)}
 								<option value={m}>{m}</option>

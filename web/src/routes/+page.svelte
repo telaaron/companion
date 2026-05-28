@@ -6,7 +6,7 @@
 	import PageHeader from '$lib/PageHeader.svelte';
 	import Markdown from '$lib/Markdown.svelte';
 	import ChatBody from '$lib/ChatBody.svelte';
-	import { Plus, Send, Mic, MicOff, Trash2, Loader2, RotateCcw, Copy, ChevronDown } from 'lucide-svelte';
+	import { Plus, Send, Mic, MicOff, Trash2, Loader2, RotateCcw, Copy, ChevronDown, ArrowDown } from 'lucide-svelte';
 
 	let sessions = $state<Session[]>([]);
 	let projects = $state<Project[]>([]);
@@ -20,6 +20,7 @@
 	let thinkingBuffer = $state('');
 	let showThinking = $state(false);
 	let messagesEl: HTMLDivElement | undefined = $state();
+	let isNearBottom = $state(true);
 	let abortCtl: AbortController | null = null;
 	let voiceAvailable = $state(false);
 	let voiceRecording = $state(false);
@@ -265,7 +266,7 @@
 
 				if (streamBuffer || thinkingBuffer) {
 					await tick();
-					scrollToBottom();
+					if (isNearBottom) scrollToBottom();
 				}
 				if (done) break;
 			}
@@ -429,7 +430,20 @@
 
 	function scrollToBottom() {
 		if (!messagesEl) return;
+		isNearBottom = true;
 		messagesEl.scrollTop = messagesEl.scrollHeight;
+	}
+
+	function onMessagesScroll() {
+		if (!messagesEl) return;
+		const threshold = 80;
+		isNearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
+	}
+
+	function scrollToBottomSmooth() {
+		if (!messagesEl) return;
+		isNearBottom = true;
+		messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
 	}
 
 	function onKeyDown(e: KeyboardEvent) {
@@ -592,7 +606,7 @@
 			{/if}
 		</header>
 
-		<div class="messages" bind:this={messagesEl}>
+		<div class="messages" bind:this={messagesEl} onscroll={onMessagesScroll}>
 			{#each messages as m (m.id)}
 				<article class="msg msg-{m.role}">
 					<header class="msg-header">
@@ -657,6 +671,12 @@
 
 			{#if !streaming && messages.length === 0}
 				<div class="empty">Send a message to start.</div>
+			{/if}
+
+			{#if !isNearBottom}
+				<button class="scroll-to-bottom-btn" type="button" onclick={scrollToBottomSmooth} aria-label="Scroll to bottom">
+					<ArrowDown size={16} strokeWidth={2} />
+				</button>
 			{/if}
 		</div>
 
@@ -834,6 +854,27 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
+		position: relative;
+	}
+	.scroll-to-bottom-btn {
+		position: sticky;
+		bottom: var(--sp-4);
+		align-self: flex-end;
+		width: 36px;
+		height: 36px;
+		border-radius: 50%;
+		border: 1px solid var(--border);
+		background: var(--bg-card);
+		color: var(--fg);
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+		z-index: 10;
+	}
+	.scroll-to-bottom-btn:hover {
+		background: var(--bg-hover);
 	}
 	.msg {
 		max-width: 760px;

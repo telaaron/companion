@@ -1,0 +1,41 @@
+name: Welcome new contributors
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  welcome:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/first-interaction@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          issue-message: |
+            👋 Thanks for filing your first issue in **Companion**!
+
+            A maintainer will take a look soon. While you wait:
+
+            - Make sure you're on the [latest release](https://github.com/telaaron/companion/releases/latest)
+            - For broader questions, [Discussions](https://github.com/telaaron/companion/discussions) move faster than the issue tracker
+            - For security topics please use a [private advisory](https://github.com/telaaron/companion/security/advisories/new) instead
+
+            If you spotted a quick fix yourself, PRs are very welcome —
+            see [CONTRIBUTING.md](https://github.com/telaaron/companion/blob/main/CONTRIBUTING.md).
+          pr-message: |
+            🎉 Thanks for opening your first pull request in **Companion**!
+
+            Quick checklist while CI runs:
+
+            - [ ] Did you read [CONTRIBUTING.md](https://github.com/telaaron/companion/blob/main/CONTRIBUTING.md)?
+            - [ ] Conventional-commit messages (`fix(scope): ...`, `feat(scope): ...`)?
+            - [ ] All five CI gates pass locally (`uv run ruff format --check && uv run ruff check && uv run ty check && uv run pytest`)?
+            - [ ] Added a `CHANGELOG.md` entry under `## [Unreleased]` if the change is user-visible?
+
+            A maintainer will review shortly. Welcome aboard 🚀

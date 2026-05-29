@@ -10,6 +10,7 @@ from __future__ import annotations
 from core.tools.registry import ToolSpec, register_extras
 
 from . import env_set as env_set_executor
+from . import imagine as imagine_executor
 from . import preferences as preferences_executor
 from . import projects as projects_executor
 from . import search as search_executor
@@ -209,6 +210,33 @@ _PREFERENCE_LIST = ToolSpec(
 )
 
 
+_IMAGINE = ToolSpec(
+    name="Imagine",
+    description=(
+        "Generate an image from a text prompt using the configured image gen "
+        "provider (default: OpenRouter Flux Schnell). Returns an image URL "
+        "that the chat UI renders inline. Use when the user asks for "
+        "a picture, diagram, illustration, logo, or any visual creation. "
+        "Keep the prompt detailed — describe style, composition, colors, "
+        "and mood for best results."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "Detailed image description. Include style, colors, "
+                    "composition, and mood. E.g. 'A serene mountain lake "
+                    "at sunset, digital painting, warm colors, wide angle'."
+                ),
+            },
+        },
+        "required": ["prompt"],
+    },
+    executor=imagine_executor.execute,
+)
+
 _SKILL_LIST = ToolSpec(
     name="SkillList",
     description=(
@@ -253,6 +281,7 @@ register_extras(
         _PROJECT_DELETE,
         _ENV_SET,
         _SEARCH,
+        _IMAGINE,
         _SKILL_LIST,
         _SKILL_RUN,
         _PREFERENCE_SET,

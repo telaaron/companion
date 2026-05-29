@@ -13,13 +13,10 @@ working board is the
 
 What's being actively worked on for the next minor release.
 
-### Targeting v1.2.0 — remaining UI polish
+### Targeting v1.2.0
 
-- [ ] Settings → add a dedicated "Voice" card (Whisper config currently
-      only lives in the Setup wizard step + Env vault)
-- [ ] Env vault: per-row copy-to-clipboard button
-- [ ] Splash screen for cold starts so the 25-30 s sidecar bootstrap is
-      legible instead of blank
+All planned v1.2.0 polish has landed — see **Done**. Next batch is being
+pulled from **Next** below.
 
 ---
 
@@ -72,6 +69,9 @@ rebuild.
 See [CHANGELOG.md](../CHANGELOG.md) for the canonical list. Highlights
 since launch:
 
+- ✅ Settings → dedicated Voice card
+- ✅ Env vault → per-row copy-to-clipboard button
+- ✅ Brand splash screen for cold-start bootstrap
 - ✅ Global search (Cmd+K) — `CommandPalette.svelte` + `GET /v1/search`
   over sessions, messages, files, audit, memories
 - ✅ Image generation — `Imagine(prompt)` tool + inline render in the

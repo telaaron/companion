@@ -19,6 +19,7 @@
 		argSummary: string;
 		filePath?: string;
 		result: string;
+		imageUrl?: string;
 	}
 
 	// Backend wraps every tool invocation in plaintext blocks shaped like:
@@ -56,7 +57,8 @@
 				label: `${toolName}(${arg.length > 60 ? arg.slice(0, 60) + '…' : arg})`,
 				argSummary: arg,
 				filePath,
-				result: (resultRaw || '').trimEnd()
+				result: (resultRaw || '').trimEnd(),
+				imageUrl: _extractImageUrl(toolName, resultRaw)
 			});
 			last = m.index + m[0].length;
 		}
@@ -69,6 +71,22 @@
 	});
 
 	let expanded = $state<Record<number, boolean>>({});
+
+	function _extractImageUrl(
+		toolName: string,
+		raw: string | undefined
+	): string | undefined {
+		if (toolName !== 'Imagine') return undefined;
+		try {
+			const obj = JSON.parse(raw || '');
+			if (obj.status === 'ok' && typeof obj.image_url === 'string') {
+				return obj.image_url;
+			}
+		} catch {
+			// not JSON
+		}
+		return undefined;
+	}
 </script>
 
 <div class="chat-body">
@@ -93,7 +111,16 @@
 					<span class="tool-toggle">{expanded[idx] ? '▾' : '▸'}</span>
 				</button>
 				{#if expanded[idx]}
-					<pre class="tool-result">{seg.result}</pre>
+					{#if seg.toolName === 'Imagine' && seg.imageUrl}
+						<div class="tool-result-image">
+							<img src={seg.imageUrl} alt={seg.argSummary} loading="lazy" />
+							<div class="tool-result-image-caption">
+								<Markdown content={'_' + seg.argSummary + '_'} />
+							</div>
+						</div>
+					{:else}
+						<pre class="tool-result">{seg.result}</pre>
+					{/if}
 				{/if}
 			</div>
 		{/if}
@@ -164,5 +191,21 @@
 		color: var(--fg-muted);
 		max-height: 300px;
 		overflow-y: auto;
+	}
+	.tool-result-image {
+		border-top: 1px solid var(--border);
+		padding: 0;
+	}
+	.tool-result-image img {
+		display: block;
+		max-width: 100%;
+		height: auto;
+		border-radius: 0 0 var(--radius) var(--radius);
+	}
+	.tool-result-image-caption {
+		padding: 6px 12px;
+		font-size: 11px;
+		color: var(--fg-dim);
+		border-top: 1px solid var(--border);
 	}
 </style>

@@ -137,6 +137,15 @@
       ? url
       : "#";
   }
+  function _tryImagineImage(bodyText, prompt) {
+    try {
+      const obj = JSON.parse(bodyText);
+      if (obj.status === "ok" && typeof obj.image_url === "string") {
+        return `<img src="${escapeHtml(obj.image_url)}" alt="${escapeHtml(prompt || '')}" loading="lazy" />`;
+      }
+    } catch { /* not JSON */ }
+    return "";
+  }
   function renderToolBlocks(text) {
     const lines = text.split("\n");
     const out = [];
@@ -234,8 +243,15 @@
           meta;
 
         // Body: wrap in <details> so output is collapsed by default.
+        // Imagine tool results contain an image URL — render inline.
+        let imgHtml = "";
+        if (toolName === "Imagine" && bodyText) {
+          imgHtml = _tryImagineImage(bodyText, rawArgs);
+        }
         const inner = bodyText
-          ? `<details class="tool-block-toggle"><summary class="tool-block-head">${header}</summary><pre class="tool-block-body">${escapeHtml(bodyText)}</pre></details>`
+          ? imgHtml
+            ? `<details class="tool-block-toggle"><summary class="tool-block-head">${header}</summary><div class="tool-block-img">${imgHtml}</div></details>`
+            : `<details class="tool-block-toggle"><summary class="tool-block-head">${header}</summary><pre class="tool-block-body">${escapeHtml(bodyText)}</pre></details>`
           : `<div class="tool-block-head tool-block-head-static">${header}</div>`;
 
         return `<div class="tool-block${clickable}" data-tool="${escapeHtml(toolLower)}"${dataPath}${dataKind}>${inner}</div>`;

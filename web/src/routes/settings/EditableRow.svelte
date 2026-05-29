@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { Pencil, X, Check } from 'lucide-svelte';
+	import { Pencil, X, Check, Copy } from 'lucide-svelte';
+	import { toasts } from '$lib/stores.svelte';
 
 	interface Row {
 		label: string;
 		value: string;
 		envKey: string;
-		type?: 'text' | 'number';
+		type?: 'text' | 'number' | 'boolean';
 		secret?: boolean;
 	}
 
@@ -57,6 +58,27 @@
 		if (e.key === 'Enter') save();
 		if (e.key === 'Escape') cancel();
 	}
+
+	async function copyValue() {
+		if (!row.value) return;
+		try {
+			await navigator.clipboard.writeText(row.value);
+		} catch {
+			// Tauri-WebKit may block the async clipboard API — fall back to execCommand.
+			const ta = document.createElement('textarea');
+			ta.value = row.value;
+			ta.style.position = 'fixed';
+			ta.style.opacity = '0';
+			document.body.appendChild(ta);
+			ta.select();
+			try {
+				document.execCommand('copy');
+			} finally {
+				document.body.removeChild(ta);
+			}
+		}
+		toasts.show(`Copied ${row.label}`, 'ok');
+	}
 </script>
 
 <tr>
@@ -64,14 +86,26 @@
 	<td class="mono">
 		{#if editing}
 			<div class="row gap-2 align-center">
-				<input
-					bind:this={inputEl}
-					class="form-input"
-					type={row.secret ? 'password' : row.type === 'number' ? 'number' : 'text'}
-					bind:value={buffer}
-					onkeydown={onKey}
-					style="flex: 1; padding: 4px 8px; font-size: 13px;"
-				/>
+				{#if row.type === 'boolean'}
+					<select
+						class="form-input"
+						bind:value={buffer}
+						onkeydown={onKey}
+						style="flex: 1; padding: 4px 8px; font-size: 13px;"
+					>
+						<option value="true">true</option>
+						<option value="false">false</option>
+					</select>
+				{:else}
+					<input
+						bind:this={inputEl}
+						class="form-input"
+						type={row.secret ? 'password' : row.type === 'number' ? 'number' : 'text'}
+						bind:value={buffer}
+						onkeydown={onKey}
+						style="flex: 1; padding: 4px 8px; font-size: 13px;"
+					/>
+				{/if}
 				<button class="btn btn-primary btn-sm" type="button" disabled={saving} onclick={save}>
 					<Check size={12} strokeWidth={2.5} />
 				</button>
@@ -82,6 +116,11 @@
 		{:else}
 			<div class="row gap-2 align-center">
 				<span class="truncate" style="flex: 1" title={row.value}>{display()}</span>
+				{#if row.value}
+					<button class="btn btn-ghost btn-icon" type="button" title="Copy" onclick={copyValue}>
+						<Copy size={14} strokeWidth={2} />
+					</button>
+				{/if}
 				<button class="btn btn-ghost btn-icon" type="button" title="Edit" onclick={begin}>
 					<Pencil size={14} strokeWidth={2} />
 				</button>

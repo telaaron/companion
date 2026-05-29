@@ -19,9 +19,50 @@ use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_updater::UpdaterExt;
 use serde::Serialize;
+
+/// Brand splash screen shown immediately on launch so the 25-30 s cold-start
+/// sidecar bootstrap is legible instead of a blank Dock icon. Three concentric
+/// arcs (the Companion mark) + an indeterminate ring + status line. Self-
+/// contained HTML — no bundled assets, served via a `data:` URL.
+/// Hex colours are avoided on purpose: a `#` in a non-encoded `data:` URL is
+/// parsed as a fragment and truncates the document, so every colour below uses
+/// `rgb()` to keep the URL `#`-free and dependency-free.
+const SPLASH_HTML: &str = r##"<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;
+background:radial-gradient(120% 120% at 30% 25%,rgb(26,29,36) 0%,rgb(12,13,16) 100%);
+font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;-webkit-user-select:none}
+.card{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;
+justify-content:center;gap:22px}
+svg{width:96px;height:96px}
+.mark{animation:fade 1.6s ease-in-out infinite alternate}
+@keyframes fade{from{opacity:.55}to{opacity:1}}
+.spin{transform-origin:48px 48px;animation:rot 1s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+.title{color:rgb(230,233,239);font-size:17px;font-weight:600;letter-spacing:-.3px}
+.sub{color:rgb(139,145,160);font-size:13px;margin-top:-12px}
+</style></head><body><div class="card">
+<svg viewBox="0 0 96 96">
+<defs>
+<linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="rgb(139,92,246)"/><stop offset="100%" stop-color="rgb(99,102,241)"/></linearGradient>
+<linearGradient id="gs" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="rgb(167,139,250)"/><stop offset="100%" stop-color="rgb(129,140,248)"/></linearGradient>
+</defs>
+<g class="mark">
+<path d="M 75.6 32.1 A 31.9 31.9 0 1 0 75.6 63.9" fill="none" stroke="url(#g)" stroke-width="5.3" stroke-linecap="round"/>
+<path d="M 67.6 36.8 A 22.5 22.5 0 1 0 67.6 59.2" fill="none" stroke="url(#g)" stroke-width="4.5" stroke-linecap="round" opacity=".85"/>
+<path d="M 59.6 41.4 A 13.1 13.1 0 1 0 59.6 54.6" fill="none" stroke="url(#gs)" stroke-width="3.8" stroke-linecap="round" opacity=".7"/>
+</g>
+<circle class="spin" cx="48" cy="48" r="44" fill="none" stroke="rgb(99,102,241)" stroke-width="2.5"
+stroke-linecap="round" stroke-dasharray="40 240" opacity=".9"/>
+</svg>
+<div class="title">Starting Companion</div>
+<div class="sub">Booting local server…</div>
+</div></body></html>"##;
 
 /// Global handle to the companion-bin child process.
 struct ServerProcess(Mutex<Option<Child>>);
@@ -41,6 +82,55 @@ fn find_companion_bin(app: &AppHandle) -> PathBuf {
     let path = path.with_extension("exe");
 
     path
+}
+
+/// Percent-encode the bytes that would otherwise break a `data:text/html` URL.
+/// We only need to escape the characters `url::Url::parse` rejects or
+/// misinterprets in the path component — chiefly `#` (fragment), `%`, and
+/// whitespace. Everything else in our static HTML is already URL-safe.
+fn encode_data_url_html(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() * 2);
+    for b in html.bytes() {
+        match b {
+            b'#' => out.push_str("%23"),
+            b'%' => out.push_str("%25"),
+            b' ' => out.push_str("%20"),
+            b'\n' => out.push_str("%0A"),
+            b'\r' => out.push_str("%0D"),
+            b'\t' => out.push_str("%09"),
+            b'"' => out.push_str("%22"),
+            _ => out.push(b as char),
+        }
+    }
+    out
+}
+
+/// Show the brand splash window immediately, before the server is up.
+/// Returns the window handle so the caller can close it once `main` is ready.
+fn show_splash(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    let url = format!("data:text/html,{}", encode_data_url_html(SPLASH_HTML));
+    let parsed = match url.parse() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("companion: splash url parse failed: {e}");
+            return None;
+        }
+    };
+    match WebviewWindowBuilder::new(app, "splashscreen", WebviewUrl::External(parsed))
+        .title("Companion")
+        .inner_size(420.0, 320.0)
+        .resizable(false)
+        .decorations(false)
+        .center()
+        .always_on_top(true)
+        .build()
+    {
+        Ok(win) => Some(win),
+        Err(e) => {
+            eprintln!("companion: splash window build failed: {e}");
+            None
+        }
+    }
 }
 
 /// Poll `127.0.0.1:8082` until it accepts connections or the deadline passes.
@@ -272,6 +362,10 @@ pub fn run() {
         .manage(ServerProcess(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![check_update])
         .setup(|app| {
+            // Show the brand splash immediately so the cold-start wait is
+            // legible instead of a blank Dock icon with no window.
+            let splash = show_splash(app.handle());
+
             // Spawn the Python server immediately.
             spawn_server(app.handle());
 
@@ -295,6 +389,11 @@ pub fn run() {
                 );
                 let _ = win.show();
                 let _ = win.set_focus();
+            }
+
+            // Main window is up — dismiss the splash.
+            if let Some(splash) = splash {
+                let _ = splash.close();
             }
 
             // Build tray.

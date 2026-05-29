@@ -1676,6 +1676,16 @@ hr {
   border-radius: 0;
 }
 
+/* Imagine tool — inline image result */
+.tool-block-img {
+  border-top: 1px solid var(--border);
+}
+.tool-block-img img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 /* Hover state for clickable (file) blocks */
 .tool-block-clickable .tool-block-head:hover {
   background: rgba(99, 102, 241, 0.05);

@@ -43,6 +43,17 @@
 		open: false
 	});
 
+	// Custom confirm modal — native window.confirm is blocked in Tauri-WebKit.
+	let confirmState = $state<{ open: boolean; message: string; resolve: ((v: boolean) => void) | null }>(
+		{ open: false, message: '', resolve: null }
+	);
+
+	function customConfirm(message: string): Promise<boolean> {
+		return new Promise((resolve) => {
+			confirmState = { open: true, message, resolve };
+		});
+	}
+
 	async function previewFile(path: string) {
 		filePreview = { path, content: '', loading: true, open: true };
 		try {
@@ -178,7 +189,7 @@
 	}
 
 	async function deleteSession(id: string) {
-		if (!confirm('Delete this session?')) return;
+		if (!(await customConfirm('Delete this session?'))) return;
 		try {
 			await api(`/v1/sessions/${id}`, { method: 'DELETE' });
 			sessions = sessions.filter((s) => s.id !== id);
@@ -195,7 +206,9 @@
 		}
 	}
 
-	async function updateSessionField(patch: Partial<Session> & { project_id?: string | null }) {
+	async function updateSessionField(
+		patch: Omit<Partial<Session>, 'project_id'> & { project_id?: string | null }
+	) {
 		if (!activeSessionId || !activeSession) return;
 		const body = {
 			title: activeSession.title,

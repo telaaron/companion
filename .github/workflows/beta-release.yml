@@ -1,0 +1,206 @@
+name: Beta Release
+
+# Beta channel — opt-in tester builds.
+#
+# Triggered by tags shaped like ``v1.2.3-beta.4`` (or rc / alpha). The
+# stable Release workflow ignores those tag patterns, so this file owns
+# them exclusively. The manifest is written as ``latest-beta.json`` so
+# the Tauri auto-updater can fetch it via a separate channel without
+# stepping on the stable ``latest.json``.
+
+on:
+  push:
+    tags:
+      - "v*.*.*-beta.*"
+      - "v*.*.*-rc.*"
+      - "v*.*.*-alpha.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (must already exist)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-python-binary:
+    name: PyInstaller — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: companion-bin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: companion-bin.exe
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: companion-bin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+      - working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - run: |
+          uv run pyinstaller packaging/companion-bin.spec \
+            --distpath packaging/dist \
+            --workpath packaging/build \
+            --noconfirm
+        shell: bash
+      - if: runner.os != 'Windows'
+        run: |
+          chmod +x packaging/dist/companion-bin
+          timeout 8 ./packaging/dist/companion-bin > /tmp/smoke.log 2>&1 || true
+          head -20 /tmp/smoke.log
+          file packaging/dist/companion-bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-binary-${{ matrix.target }}
+          path: packaging/dist/${{ matrix.artifact }}
+          retention-days: 1
+
+  build-tauri:
+    name: Tauri — ${{ matrix.os }}
+    needs: build-python-binary
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            python-artifact: companion-bin
+            bundle-ext: dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            python-artifact: companion-bin.exe
+            bundle-ext: exe
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            python-artifact: companion-bin
+            bundle-ext: AppImage
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tauri/src-tauri -> target"
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-binary-${{ matrix.target }}
+          path: packaging/dist
+      - if: runner.os != 'Windows'
+        run: chmod +x packaging/dist/companion-bin
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+      - working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - run: cargo install tauri-cli --version "^2" --locked
+      - working-directory: tauri/src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          APPLE_SIGNING_IDENTITY: ""
+        run: cargo tauri build --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Companion-${{ github.ref_name }}-${{ matrix.target }}
+          path: |
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.${{ matrix.bundle-ext }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Companion-updater-${{ github.ref_name }}-${{ matrix.target }}
+          path: |
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.tar.gz
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.tar.gz.sig
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.zip
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.zip.sig
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage.sig
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.nsis.zip
+            tauri/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.nsis.zip.sig
+          if-no-files-found: warn
+
+  release:
+    name: Beta Release
+    needs: build-tauri
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "Companion-*"
+          path: dist
+          merge-multiple: true
+      - name: Generate latest-beta.json
+        run: |
+          # Strip the leading "v" from the tag for SemVer parsing.
+          python3 .github/scripts/build_latest_json.py \
+            --version "${GITHUB_REF_NAME#v}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --bundles-dir dist \
+            --output dist/latest-beta.json \
+            --notes "Beta build — opt-in tester channel. See release notes for details."
+          cat dist/latest-beta.json
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Companion ${{ github.ref_name }} (Beta)
+          draft: false
+          # Mark as pre-release so GitHub UI tags it correctly + clients
+          # that only follow ``releases/latest`` don't auto-pull it.
+          prerelease: true
+          generate_release_notes: true
+          files: dist/**/*
+          body: |
+            ## Companion ${{ github.ref_name }} — Beta
+
+            ⚠️ **Opt-in tester build.** Not the stable channel.
+
+            To install: download the installer below and open it. To
+            keep getting beta updates inside the app, set the updater
+            channel to `beta` in **Settings → Updates**.
+
+            | Platform | Download |
+            |---|---|
+            | macOS (Apple Silicon) | `Companion_*_aarch64.dmg` |
+            | Windows (x64) | `Companion_*_x64-setup.exe` |
+            | Linux (x64) | `companion_*_amd64.AppImage` |
+
+            Stable builds live on the
+            [latest release](https://github.com/telaaron/companion/releases/latest).

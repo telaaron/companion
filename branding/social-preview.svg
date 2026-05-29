@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <!--
+    GitHub social-preview banner (1280×640).
+    Left: small icon, right: wordmark + tagline.
+  -->
+
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="brand-soft" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#818cf8"/>
+    </linearGradient>
+    <radialGradient id="bg" cx="20%" cy="30%" r="80%">
+      <stop offset="0%" stop-color="#1a1d24"/>
+      <stop offset="100%" stop-color="#0c0d10"/>
+    </radialGradient>
+    <linearGradient id="text-grad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#cdd2da"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+
+  <!-- Icon block on the left (320×320 centered vertically) -->
+  <g transform="translate(120, 160)">
+    <!-- Three concentric arcs at 320×320 — scaled-down icon. -->
+    <path
+      d="M 252.0 106.875 A 106.25 106.25 0 1 0 252.0 213.125"
+      fill="none" stroke="url(#brand)" stroke-width="17.5" stroke-linecap="round"
+    />
+    <path
+      d="M 225.3 122.5 A 75 75 0 1 0 225.3 197.5"
+      fill="none" stroke="url(#brand)" stroke-width="15" stroke-linecap="round" opacity="0.85"
+    />
+    <path
+      d="M 198.5 138.125 A 43.75 43.75 0 1 0 198.5 181.875"
+      fill="none" stroke="url(#brand-soft)" stroke-width="12.5" stroke-linecap="round" opacity="0.7"
+    />
+  </g>
+
+  <!-- Wordmark + tagline on the right -->
+  <g transform="translate(540, 0)">
+    <text
+      x="0" y="312"
+      font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif"
+      font-size="120"
+      font-weight="700"
+      letter-spacing="-3"
+      fill="url(#text-grad)"
+    >Companion</text>
+    <text
+      x="0" y="372"
+      font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif"
+      font-size="28"
+      font-weight="400"
+      letter-spacing="0"
+      fill="#8b91a0"
+    >Your AI workstation. Self-hosted. Any provider.</text>
+  </g>
+
+  <!-- Subtle bottom-right meta -->
+  <text
+    x="1160" y="600"
+    font-family="ui-monospace, 'SF Mono', Menlo, monospace"
+    font-size="14"
+    fill="#5d6373"
+    text-anchor="end"
+  >github.com/telaaron/companion</text>
+</svg>

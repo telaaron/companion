@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Companion app icon — geometric mark.
+
+    Concept: an opening "C" rendered as three concentric arcs, suggesting
+    orbital partnership + an AI companion that listens and surrounds the
+    user's work. Indigo→violet gradient on a soft, modern dark canvas.
+
+    Design rules:
+    - No text inside the icon (read at 16 px favicon)
+    - Centered on 1024×1024 canvas with comfortable padding (~144 px)
+    - One gradient direction, one stroke width family, three arcs
+  -->
+
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="brand-soft" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#818cf8"/>
+    </linearGradient>
+    <radialGradient id="bg" cx="50%" cy="40%" r="70%">
+      <stop offset="0%" stop-color="#1a1d24"/>
+      <stop offset="100%" stop-color="#0c0d10"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded square canvas — matches macOS app-icon corner radius (~22% on iOS, ~18% on macOS). -->
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#bg)"/>
+
+  <!--
+    Three concentric arcs forming an opening "C".
+
+    Arc geometry:
+      - Center at (512, 512)
+      - Outer arc r=340, stroke 56
+      - Middle arc r=240, stroke 48
+      - Inner arc r=140, stroke 40
+      - Each arc spans from 30° to 330° (300° of sweep), leaving the
+        right side open. Direction: counter-clockwise via large-arc-flag=1.
+  -->
+
+  <!-- Outer arc — strongest stroke -->
+  <path
+    d="M 806.4 342.0 A 340 340 0 1 0 806.4 682.0"
+    fill="none"
+    stroke="url(#brand)"
+    stroke-width="56"
+    stroke-linecap="round"
+  />
+
+  <!-- Middle arc -->
+  <path
+    d="M 720.9 392.0 A 240 240 0 1 0 720.9 632.0"
+    fill="none"
+    stroke="url(#brand)"
+    stroke-width="48"
+    stroke-linecap="round"
+    opacity="0.85"
+  />
+
+  <!-- Inner arc — softest tone -->
+  <path
+    d="M 635.3 442.0 A 140 140 0 1 0 635.3 582.0"
+    fill="none"
+    stroke="url(#brand-soft)"
+    stroke-width="40"
+    stroke-linecap="round"
+    opacity="0.7"
+  />
+</svg>

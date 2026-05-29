@@ -4,7 +4,7 @@ Companion's plan, kept honest. Top-level milestones live here; the live
 working board is the
 [GitHub Project — Companion Roadmap](https://github.com/users/telaaron/projects).
 
-**Last updated**: 2026-05-28
+**Last updated**: 2026-05-29
 **Current release**: v1.1.4 — see [CHANGELOG.md](../CHANGELOG.md)
 
 ---
@@ -13,22 +13,11 @@ working board is the
 
 What's being actively worked on for the next minor release.
 
-### Targeting v1.2.0 — UI polish + missing buttons
+### Targeting v1.2.0 — remaining UI polish
 
-- [ ] Delete buttons on chat + project + routine rows (Tauri-WebKit
-      `confirm()` is blocked; need a custom modal)
-- [ ] Auto-rename session uses the actual title returned from
-      `/v1/sessions/{id}/auto-rename`
-- [ ] Mic button visibility refresh when `VOICE_NOTE_ENABLED` flips
-- [ ] Settings → add a "Voice" card (so Whisper config no longer hides
-      in Env vault)
-- [ ] Model picker: poll `/v1/models/upstream` until cache is warm
+- [ ] Settings → add a dedicated "Voice" card (Whisper config currently
+      only lives in the Setup wizard step + Env vault)
 - [ ] Env vault: per-row copy-to-clipboard button
-- [ ] Tool-block file-preview side panel (click `⏺ Read(…)` → open
-      preview)
-- [ ] Memory CRUD (currently 405s — endpoint mismatch)
-- [ ] Auto-updater: visible "Checking for updates" / "Downloading 12 of
-      39 MB" indicator
 - [ ] Splash screen for cold starts so the 25-30 s sidecar bootstrap is
       legible instead of blank
 
@@ -42,28 +31,18 @@ Probably v1.3 — anything below this line is still up for discussion.
   pin/unpin from sidebar
 - **Routines V2**: create-drawer with live cron preview, run history
   with output viewer
-- **Range pickers** on Usage + Insights (24h / 7d / 30d / custom)
 - **File-edits**: unified-diff viewer, per-project grouping, search
 - **Root-files**: dynamic allow-list rooted in the active project's
   workspace
 - **Auto-Insights**: rule-based suggestions from `usage_events` +
   `audit_log` (e.g. "you sent 80 % of your tokens to Opus — switch 60 %
   to Sonnet to save $X/mo")
-- **Setup wizard** (Settings → Setup wizard button is still inert)
 
 ---
 
 ## Later
 
 Bigger bets, less locked in.
-
-### Global search (Cmd+K)
-
-A single search bar over **everything** — sessions, messages, files in
-your workspace, audit events, settings keys, pinned memories. Backend
-already has FTS5 (`memory_fts`); we'd add a `GET /v1/search` that fans
-out across kinds. Frontend: overlay component (`$lib/CommandPalette.svelte`)
-with sections grouped by kind, click → navigate.
 
 ### Skills marketplace
 
@@ -72,13 +51,6 @@ Public skills catalog hosted in a separate `companion-skills` repo with a
 AI advisor: "I need something for X" → LLM filters the catalog and asks
 clarifying questions. Compatible with `.claude/skills/*.md` so anything
 that runs in Claude Code carries over.
-
-### Image generation that actually works
-
-The system prompt mentions an `imagine:` keyword, but there's no tool
-behind it yet. Add an `Imagine(prompt)` tool that calls the configured
-`IMAGE_GEN_PROVIDER`, stores the result, and renders inline in the chat
-body.
 
 ### Multi-user / sharing
 
@@ -100,6 +72,19 @@ rebuild.
 See [CHANGELOG.md](../CHANGELOG.md) for the canonical list. Highlights
 since launch:
 
+- ✅ Global search (Cmd+K) — `CommandPalette.svelte` + `GET /v1/search`
+  over sessions, messages, files, audit, memories
+- ✅ Image generation — `Imagine(prompt)` tool + inline render in the
+  chat body
+- ✅ Delete buttons on chat / project / routine rows (custom modal,
+  Tauri-WebKit `confirm()` workaround)
+- ✅ Auto-rename sessions via `/v1/sessions/{id}/auto-rename`
+- ✅ Tool-block file-preview side panel (`⏺ Read(…)` → slide-in)
+- ✅ Model-picker polling against `/v1/models/upstream`
+- ✅ Voice input (mic toggle) + Setup wizard with a Voice step
+- ✅ Range pickers on Usage (24h / 7d / 30d)
+- ✅ Auto-updater download-progress indicator (Rust side)
+- ✅ Pinned-memory CRUD (delete endpoint wired)
 - ✅ SvelteKit dashboard rewrite (v1.1.0)
 - ✅ Tauri auto-updater with signed releases (v1.1.0)
 - ✅ Memory-leak hardening for the indexer + MCP stderr (v1.1.0)

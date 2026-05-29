@@ -1,0 +1,14 @@
+# Companion funding sources. Shown on the repo "Sponsor" button.
+#
+# Companion is free + MIT-licensed. Donations cover API credits for
+# testing new models, domain hosting, and build-time. Every euro helps.
+
+github: [telaaron]
+ko_fi: telaaron
+
+# Other options we could add later — leaving as a reference:
+# patreon: <username>
+# open_collective: <slug>
+# liberapay: <username>
+# tidelift: <platform-name/package-name>
+# custom: ['https://your-domain.tld/sponsor']

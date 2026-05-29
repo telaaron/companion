@@ -1,0 +1,24 @@
+# Code owners — auto-requested reviewers for matching paths.
+#
+# Until the project has a second maintainer, everything routes to
+# @telaaron. Add more handles per-area as the contributor base grows.
+#
+# Syntax docs: https://docs.github.com/articles/about-code-owners
+
+*                          @telaaron
+
+# Backend hot-paths — keep the bar high.
+/api/                      @telaaron
+/core/                     @telaaron
+/providers/                @telaaron
+
+# Frontend
+/web/                      @telaaron
+
+# Desktop shell + packaging — touches signing + auto-updater.
+/tauri/                    @telaaron
+/packaging/                @telaaron
+
+# CI / release plumbing.
+/.github/                  @telaaron
+/docs/RELEASE_PROCESS.md   @telaaron

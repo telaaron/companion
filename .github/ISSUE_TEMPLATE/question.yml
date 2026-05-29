@@ -1,0 +1,30 @@
+name: ❓ Question
+description: Something you can't figure out from the docs.
+title: "question: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Quick reminder: most questions belong in
+        [Discussions Q&A](https://github.com/telaaron/companion/discussions/new?category=q-a)
+        rather than the issue tracker. Issues are for things that need
+        a code change. If you're not sure, post in Discussions — we'll
+        convert it if it turns out to be a bug.
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+      placeholder: I'm trying to ... but I'm not sure how to ...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: What have you already tried?
+      placeholder: Read the README, checked the docs, searched issues, …
+  - type: input
+    id: version
+    attributes:
+      label: Companion version
+      placeholder: v1.1.4

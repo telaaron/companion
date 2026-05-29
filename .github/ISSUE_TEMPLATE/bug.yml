@@ -1,0 +1,83 @@
+name: 🐞 Bug report
+description: Something is broken or behaves unexpectedly.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. The more detail you can
+        share, the faster we can fix it.
+  - type: input
+    id: version
+    attributes:
+      label: Companion version
+      description: Open Settings → Server, copy the version + build line.
+      placeholder: e.g. v1.1.4 (build 9d70c53 · 2026-05-27 14:32 UTC)
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows 10/11
+        - Linux (AppImage)
+        - Source install (uv run companion-server)
+    validations:
+      required: true
+  - type: dropdown
+    id: install_type
+    attributes:
+      label: How did you install?
+      options:
+        - DMG / installer from Releases
+        - Built from source
+        - Auto-updater pushed it
+    validations:
+      required: true
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: Describe the bug. Screenshots help.
+      placeholder: "When I click X, the UI shows Y instead of Z."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the app
+        2. Go to Settings
+        3. Click ...
+        4. See error ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      placeholder: I expected the dropdown to save my selection.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / console output
+      description: Paste the relevant console or server log. Don't paste secrets.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Sanity checks
+      options:
+        - label: I searched existing issues + discussions and didn't find a duplicate.
+          required: true
+        - label: I'm on the latest release (or main branch).
+          required: true
+        - label: I removed any API keys, tokens, or personal data from the logs above.
+          required: true

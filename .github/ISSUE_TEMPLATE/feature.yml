@@ -1,0 +1,56 @@
+name: 💡 Feature request
+description: Suggest a new capability or improvement.
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? Awesome. For larger designs, please open a
+        [Discussion](https://github.com/telaaron/companion/discussions/new?category=ideas)
+        first — it's easier to iterate on a sketch than a half-built PR.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Tell us about the use case, not the implementation.
+      placeholder: "When I'm doing X, I have to do Y manually because Z is missing."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: Add a button that ... / surface this in the settings page / ...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      placeholder: I tried doing this via env var, but ...
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area is this about?
+      options:
+        - Chat / agent loop
+        - Projects
+        - Settings / Env vault
+        - Usage / Insights
+        - File edits / preview
+        - Skills / Marketplace
+        - Memory / preferences
+        - Routines
+        - Audit log
+        - Auto-updater / releases
+        - Desktop shell (Tauri)
+        - Docs / website
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else?
+      description: Mockups, related issues, prior art.

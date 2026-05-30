@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
-	import { toasts } from '$lib/stores.svelte';
+	import { toasts, confirmStore } from '$lib/stores.svelte';
 	import PageHeader from '$lib/PageHeader.svelte';
 	import { Plus, Trash2 } from 'lucide-svelte';
 	import type { Preference } from '$lib/types';
@@ -34,7 +34,7 @@
 	}
 
 	async function remove(key: string) {
-		if (!confirm(`Delete ${key}?`)) return;
+		if (!(await confirmStore.ask(`Delete ${key}?`))) return;
 		try {
 			await api(`/v1/preferences/${encodeURIComponent(key)}`, { method: 'DELETE' });
 			await load();

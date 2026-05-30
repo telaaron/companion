@@ -13,7 +13,17 @@
 		breaks: true
 	});
 
-	let html = $derived(marked.parse(content || '', { async: false }) as string);
+	// During streaming the content can end mid-fence — the closing ``` has
+	// not arrived yet. marked then treats the whole block as plain text, so
+	// code/bash renders unformatted until the stream finishes. Counting the
+	// fence markers and temporarily closing an odd one lets marked format
+	// the block live; the real closing fence replaces it on the next chunk.
+	function closeOpenFences(src: string): string {
+		const fences = (src.match(/^```/gm) || []).length;
+		return fences % 2 === 1 ? src + '\n```' : src;
+	}
+
+	let html = $derived(marked.parse(closeOpenFences(content || ''), { async: false }) as string);
 </script>
 
 <div class="md">{@html html}</div>

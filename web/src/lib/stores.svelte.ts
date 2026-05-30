@@ -86,3 +86,33 @@ class HealthStore {
 }
 
 export const health = new HealthStore();
+
+/**
+ * Global confirm dialog. Native window.confirm is a no-op (returns false /
+ * is blocked) inside the Tauri WebKit shell, which silently swallowed every
+ * delete action. This store backs a single <ConfirmModal> mounted in the
+ * root layout; ``confirmStore.ask(msg)`` resolves to the user's choice.
+ */
+class ConfirmStore {
+	open = $state(false);
+	message = $state('');
+	private resolver: ((v: boolean) => void) | null = null;
+
+	ask(message: string): Promise<boolean> {
+		this.message = message;
+		this.open = true;
+		return new Promise<boolean>((resolve) => {
+			this.resolver = resolve;
+		});
+	}
+
+	resolve(value: boolean) {
+		this.open = false;
+		this.message = '';
+		const r = this.resolver;
+		this.resolver = null;
+		r?.(value);
+	}
+}
+
+export const confirmStore = new ConfirmStore();

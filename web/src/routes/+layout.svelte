@@ -18,6 +18,7 @@
 		Settings as SettingsIcon
 	} from 'lucide-svelte';
 	import CommandPalette from '$lib/CommandPalette.svelte';
+	import ConfirmModal from '$lib/ConfirmModal.svelte';
 	import '../app.css';
 
 	const NAV = [
@@ -93,6 +94,7 @@
 </div>
 
 <CommandPalette bind:open={paletteOpen} />
+<ConfirmModal />
 
 {#if toasts.items.length > 0}
 	<div class="toast-stack">

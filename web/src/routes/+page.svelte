@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import { api, sseStream } from '$lib/api';
-	import { toasts } from '$lib/stores.svelte';
+	import { toasts, confirmStore } from '$lib/stores.svelte';
 	import type { Session, Message, Project } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
 	import Markdown from '$lib/Markdown.svelte';
@@ -42,17 +42,6 @@
 		loading: false,
 		open: false
 	});
-
-	// Custom confirm modal — native window.confirm is blocked in Tauri-WebKit.
-	let confirmState = $state<{ open: boolean; message: string; resolve: ((v: boolean) => void) | null }>(
-		{ open: false, message: '', resolve: null }
-	);
-
-	function customConfirm(message: string): Promise<boolean> {
-		return new Promise((resolve) => {
-			confirmState = { open: true, message, resolve };
-		});
-	}
 
 	async function previewFile(path: string) {
 		filePreview = { path, content: '', loading: true, open: true };
@@ -160,6 +149,16 @@
 	}
 
 	async function selectSession(id: string) {
+		// Abort any in-flight stream for the previous session before we swap
+		// activeSessionId. The shared streamBuffer/messages/abortCtl would
+		// otherwise let the old job keep writing into — and persist onto —
+		// the newly selected session. The backend job keeps running; on
+		// switch-back the resume logic reconnects from the last event id.
+		if (abortCtl) {
+			abortCtl.abort();
+			abortCtl = null;
+		}
+		streaming = false;
 		activeSessionId = id;
 		messages = [];
 		streamBuffer = '';
@@ -189,7 +188,7 @@
 	}
 
 	async function deleteSession(id: string) {
-		if (!(await customConfirm('Delete this session?'))) return;
+		if (!(await confirmStore.ask('Delete this session?'))) return;
 		try {
 			await api(`/v1/sessions/${id}`, { method: 'DELETE' });
 			sessions = sessions.filter((s) => s.id !== id);
@@ -238,11 +237,15 @@
 
 	async function runJob(opts: { history: Message[]; nextUser: string | null; overrideModel?: string }) {
 		if (!activeSessionId) return;
+		// Pin the session this job belongs to. If the user switches away
+		// mid-stream, activeSessionId changes — we use this snapshot to
+		// avoid writing/persisting onto the wrong session.
+		const jobSessionId = activeSessionId;
 		streaming = true;
 		streamBuffer = '';
 		thinkingBuffer = '';
 		try {
-			const job = await api<{ id: string }>(`/v1/sessions/${activeSessionId}/jobs`, {
+			const job = await api<{ id: string }>(`/v1/sessions/${jobSessionId}/jobs`, {
 				method: 'POST',
 				body: {
 					model: opts.overrideModel || activeSession?.model || defaultModel,
@@ -254,39 +257,93 @@
 
 			abortCtl = new AbortController();
 			let done = false;
-			for await (const frame of sseStream(`/v1/jobs/${job.id}/events`, abortCtl.signal)) {
-				const data = (frame.data ?? {}) as Record<string, unknown>;
-				const evName = frame.event;
-				const evType = data.type as string | undefined;
+			// Resumable consume: the backend stores every event keyed by an
+			// incrementing seq and emits it as the SSE `id:` field. If the
+			// connection drops (idle proxy timeout, network blip) before the
+			// terminal job_finished event, we reconnect with last_event_id so
+			// the server replays from where we left off — no lost middle, no
+			// duplicate text. Bounded retries with backoff guard a dead job.
+			let lastEventId = -1;
+			let attempts = 0;
+			const MAX_RECONNECTS = 6;
 
-				if (evName === 'content_block_delta' || evType === 'content_block_delta') {
-					const delta = data.delta as { type?: string; text?: string; thinking?: string } | undefined;
-					if (delta?.type === 'text_delta' && delta.text) streamBuffer += delta.text;
-					else if (delta?.type === 'thinking_delta' && delta.thinking) thinkingBuffer += delta.thinking;
-				} else if (
-					evName === 'job_finished' ||
-					evName === 'job_status' ||
-					evType === 'job_finished'
-				) {
-					const status = data.status as string | undefined;
-					if (status === 'error') toasts.show('Job failed', 'error');
-					done = true;
-				} else if (evName === 'error' || evType === 'error') {
-					const msg = (data.error || data.message) as string | undefined;
-					if (msg) toasts.show(String(msg), 'error');
-					done = true;
+			while (!done) {
+				const path =
+					lastEventId >= 0
+						? `/v1/jobs/${job.id}/events?last_event_id=${lastEventId}`
+						: `/v1/jobs/${job.id}/events`;
+				let clean = false;
+				try {
+					for await (const frame of sseStream(path, abortCtl.signal)) {
+						// User switched sessions mid-stream — stop touching shared
+						// state; the backend job runs on, resumable on switch-back.
+						if (activeSessionId !== jobSessionId) {
+							done = true;
+							break;
+						}
+						if (frame.id) {
+							const v = parseInt(frame.id, 10);
+							if (!Number.isNaN(v)) lastEventId = v;
+						}
+						const data = (frame.data ?? {}) as Record<string, unknown>;
+						const evName = frame.event;
+						const evType = data.type as string | undefined;
+
+						if (evName === 'content_block_delta' || evType === 'content_block_delta') {
+							const delta = data.delta as { type?: string; text?: string; thinking?: string } | undefined;
+							if (delta?.type === 'text_delta' && delta.text) streamBuffer += delta.text;
+							else if (delta?.type === 'thinking_delta' && delta.thinking) thinkingBuffer += delta.thinking;
+						} else if (
+							evName === 'job_finished' ||
+							evName === 'job_status' ||
+							evType === 'job_finished'
+						) {
+							const status = data.status as string | undefined;
+							if (status === 'error') toasts.show('Job failed', 'error');
+							done = true;
+							clean = true;
+						} else if (evName === 'error' || evType === 'error') {
+							const msg = (data.error || data.message) as string | undefined;
+							if (msg) toasts.show(String(msg), 'error');
+							done = true;
+							clean = true;
+						}
+
+						if (streamBuffer || thinkingBuffer) {
+							await tick();
+							if (isNearBottom) scrollToBottom();
+						}
+						if (done) break;
+					}
+				} catch (e) {
+					// Aborted by a session switch / regenerate — propagate so the
+					// outer catch/finally tears down without persisting.
+					if ((e as Error)?.name === 'AbortError' || abortCtl?.signal.aborted) throw e;
+					// Otherwise a transient stream drop — fall through to reconnect.
 				}
 
-				if (streamBuffer || thinkingBuffer) {
-					await tick();
-					if (isNearBottom) scrollToBottom();
-				}
 				if (done) break;
+				// Stream ended without a terminal event: poll job status. If the
+				// job already finished server-side, replay one last time to drain
+				// the tail; if still running, reconnect and resume.
+				const st = await api<{ status: string }>(`/v1/jobs/${job.id}`).catch(() => null);
+				if (st && ['done', 'error', 'cancelled'].includes(st.status)) {
+					// One final replay pass to capture any events emitted between
+					// our last seen seq and job completion.
+					if (clean) break;
+				}
+				attempts += 1;
+				if (attempts > MAX_RECONNECTS) {
+					toasts.show('Stream lost — could not resume', 'error');
+					break;
+				}
+				await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** (attempts - 1), 8000)));
 			}
 
-			if (streamBuffer.trim()) {
+			// Only persist if we're still on the session that owns this job.
+			if (activeSessionId === jobSessionId && streamBuffer.trim()) {
 				try {
-					await api(`/v1/sessions/${activeSessionId}/messages`, {
+					await api(`/v1/sessions/${jobSessionId}/messages`, {
 						method: 'POST',
 						body: { role: 'assistant', content: streamBuffer }
 					});
@@ -298,7 +355,7 @@
 					...messages,
 					{
 						id: localMsgId,
-						session_id: activeSessionId!,
+						session_id: jobSessionId,
 						role: 'assistant',
 						content: streamBuffer,
 						created_at: new Date().toISOString()
@@ -311,33 +368,41 @@
 			}
 
 			// Auto-rename session on first turn if title is still default.
-			if ((activeSession?.title || '').match(/^(New chat|Untitled|)$/)) {
+			// Skip if the user navigated away mid-stream.
+			if (activeSessionId === jobSessionId && (activeSession?.title || '').match(/^(New chat|Untitled|)$/)) {
 				try {
 					const firstUser = messages.find((m) => m.role === 'user');
 					const firstAssistant = messages.find((m) => m.role === 'assistant');
-					await api(`/v1/sessions/${activeSessionId}/auto-rename`, {
+					await api(`/v1/sessions/${jobSessionId}/auto-rename`, {
 						method: 'POST',
 						body: {
 							first_user_message: firstUser?.content ?? '',
 							first_assistant_message: firstAssistant?.content ?? ''
 						}
 					});
-					const fresh = await api<Session>(`/v1/sessions/${activeSessionId}`);
+					const fresh = await api<Session>(`/v1/sessions/${jobSessionId}`);
 					if (fresh.title && activeSession) {
 						activeSession = { ...activeSession, title: fresh.title };
-						sessions = sessions.map((s) => (s.id === activeSessionId ? { ...s, title: fresh.title } : s));
+						sessions = sessions.map((s) => (s.id === jobSessionId ? { ...s, title: fresh.title } : s));
 					}
 				} catch {
 					/* best effort */
 				}
 			}
 		} catch (e) {
-			toasts.show(`Send failed: ${(e as Error).message}`, 'error');
+			// Aborts from session-switch/regenerate are intentional — stay quiet.
+			if ((e as Error)?.name !== 'AbortError') {
+				toasts.show(`Send failed: ${(e as Error).message}`, 'error');
+			}
 		} finally {
-			streaming = false;
-			streamBuffer = '';
-			thinkingBuffer = '';
-			abortCtl = null;
+			// Only clear the streaming flag if this job still owns the view.
+			// A newer job (after switch-back) may already be streaming.
+			if (activeSessionId === jobSessionId) {
+				streaming = false;
+				streamBuffer = '';
+				thinkingBuffer = '';
+			}
+			if (abortCtl?.signal.aborted) abortCtl = null;
 		}
 	}
 

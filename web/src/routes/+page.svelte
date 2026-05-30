@@ -4,7 +4,6 @@
 	import { toasts, confirmStore } from '$lib/stores.svelte';
 	import type { Session, Message, Project } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
-	import Markdown from '$lib/Markdown.svelte';
 	import ChatBody from '$lib/ChatBody.svelte';
 	import { Plus, Send, Mic, MicOff, Trash2, Loader2, RotateCcw, Copy, ChevronDown, ArrowDown } from 'lucide-svelte';
 
@@ -792,7 +791,7 @@
 					</header>
 					<div class="msg-body">
 						{#if streamBuffer}
-							<Markdown content={streamBuffer} />
+							<ChatBody content={streamBuffer} onPreviewFile={previewFile} />
 						{:else}
 							<span style="color: var(--fg-muted)">…</span>
 						{/if}

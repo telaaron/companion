@@ -15,13 +15,47 @@
 	let activeSession = $state<(Session & { messages?: Message[]; project_id?: string }) | null>(null);
 	let messages = $state<Message[]>([]);
 	let composer = $state('');
-	let streaming = $state(false);
-	let streamBuffer = $state('');
-	let thinkingBuffer = $state('');
 	let showThinking = $state(false);
 	let messagesEl: HTMLDivElement | undefined = $state();
 	let isNearBottom = $state(true);
-	let abortCtl: AbortController | null = null;
+
+	// Per-session stream state. Each running job keeps its own buffers and
+	// abort controller so multiple chats stream in parallel — switching the
+	// visible session never tears down another session's in-flight job. The
+	// template reads the active session's record via the `stream*` derived
+	// getters below; runJob writes only into its own record.
+	interface StreamState {
+		streaming: boolean;
+		streamBuffer: string;
+		thinkingBuffer: string;
+		abortCtl: AbortController | null;
+	}
+	let streamStates = $state<Map<string, StreamState>>(new Map());
+
+	function getStream(id: string | null): StreamState | undefined {
+		return id ? streamStates.get(id) : undefined;
+	}
+	function setStream(id: string, patch: Partial<StreamState>) {
+		const next = new Map(streamStates);
+		const cur = next.get(id) ?? {
+			streaming: false,
+			streamBuffer: '',
+			thinkingBuffer: '',
+			abortCtl: null
+		};
+		next.set(id, { ...cur, ...patch });
+		streamStates = next;
+	}
+	function clearStream(id: string) {
+		const next = new Map(streamStates);
+		next.delete(id);
+		streamStates = next;
+	}
+
+	// View-bound getters: what the currently selected session is doing.
+	let streaming = $derived(getStream(activeSessionId)?.streaming ?? false);
+	let streamBuffer = $derived(getStream(activeSessionId)?.streamBuffer ?? '');
+	let thinkingBuffer = $derived(getStream(activeSessionId)?.thinkingBuffer ?? '');
 	let voiceAvailable = $state(false);
 	let voiceRecording = $state(false);
 	let defaultModel = $state('deepseek/deepseek-v4-pro');
@@ -149,20 +183,13 @@
 	}
 
 	async function selectSession(id: string) {
-		// Abort any in-flight stream for the previous session before we swap
-		// activeSessionId. The shared streamBuffer/messages/abortCtl would
-		// otherwise let the old job keep writing into — and persist onto —
-		// the newly selected session. The backend job keeps running; on
-		// switch-back the resume logic reconnects from the last event id.
-		if (abortCtl) {
-			abortCtl.abort();
-			abortCtl = null;
-		}
-		streaming = false;
+		// No teardown of other sessions' streams — they run in parallel and
+		// keep streaming into their own StreamState records. Switching just
+		// changes which record the view renders. A job still running for the
+		// session we're opening keeps appending to its live buffer; its final
+		// message lands via the fresh load below once it finishes.
 		activeSessionId = id;
 		messages = [];
-		streamBuffer = '';
-		thinkingBuffer = '';
 		try {
 			const data = await api<Session & { messages?: Message[] }>(`/v1/sessions/${id}`);
 			activeSession = data;
@@ -190,6 +217,9 @@
 	async function deleteSession(id: string) {
 		if (!(await confirmStore.ask('Delete this session?'))) return;
 		try {
+			// Stop a stream running for the session we're about to delete.
+			getStream(id)?.abortCtl?.abort();
+			clearStream(id);
 			await api(`/v1/sessions/${id}`, { method: 'DELETE' });
 			sessions = sessions.filter((s) => s.id !== id);
 			if (activeSessionId === id) {
@@ -235,27 +265,37 @@
 		return out;
 	}
 
-	async function runJob(opts: { history: Message[]; nextUser: string | null; overrideModel?: string }) {
-		if (!activeSessionId) return;
-		// Pin the session this job belongs to. If the user switches away
-		// mid-stream, activeSessionId changes — we use this snapshot to
-		// avoid writing/persisting onto the wrong session.
-		const jobSessionId = activeSessionId;
-		streaming = true;
-		streamBuffer = '';
-		thinkingBuffer = '';
+	async function runJob(opts: {
+		sessionId: string;
+		model: string;
+		projectId: string | null;
+		history: Message[];
+		nextUser: string | null;
+	}) {
+		// Pin the session this job belongs to. All state lives in this
+		// session's StreamState record so a parallel job in another session
+		// is untouched. Local mirrors avoid Map churn on every chunk.
+		const jobSessionId = opts.sessionId;
+		let buf = '';
+		let thinkBuf = '';
+		const ctl = new AbortController();
+		setStream(jobSessionId, {
+			streaming: true,
+			streamBuffer: '',
+			thinkingBuffer: '',
+			abortCtl: ctl
+		});
 		try {
 			const job = await api<{ id: string }>(`/v1/sessions/${jobSessionId}/jobs`, {
 				method: 'POST',
 				body: {
-					model: opts.overrideModel || activeSession?.model || defaultModel,
+					model: opts.model,
 					messages: toAnthropicMessages(opts.history, opts.nextUser),
 					max_tokens: 4096,
-					project_id: activeSession?.project_id || null
+					project_id: opts.projectId
 				}
 			});
 
-			abortCtl = new AbortController();
 			let done = false;
 			// Resumable consume: the backend stores every event keyed by an
 			// incrementing seq and emits it as the SSE `id:` field. If the
@@ -274,13 +314,7 @@
 						: `/v1/jobs/${job.id}/events`;
 				let clean = false;
 				try {
-					for await (const frame of sseStream(path, abortCtl.signal)) {
-						// User switched sessions mid-stream — stop touching shared
-						// state; the backend job runs on, resumable on switch-back.
-						if (activeSessionId !== jobSessionId) {
-							done = true;
-							break;
-						}
+					for await (const frame of sseStream(path, ctl.signal)) {
 						if (frame.id) {
 							const v = parseInt(frame.id, 10);
 							if (!Number.isNaN(v)) lastEventId = v;
@@ -291,8 +325,8 @@
 
 						if (evName === 'content_block_delta' || evType === 'content_block_delta') {
 							const delta = data.delta as { type?: string; text?: string; thinking?: string } | undefined;
-							if (delta?.type === 'text_delta' && delta.text) streamBuffer += delta.text;
-							else if (delta?.type === 'thinking_delta' && delta.thinking) thinkingBuffer += delta.thinking;
+							if (delta?.type === 'text_delta' && delta.text) buf += delta.text;
+							else if (delta?.type === 'thinking_delta' && delta.thinking) thinkBuf += delta.thinking;
 						} else if (
 							evName === 'job_finished' ||
 							evName === 'job_status' ||
@@ -309,16 +343,20 @@
 							clean = true;
 						}
 
-						if (streamBuffer || thinkingBuffer) {
-							await tick();
-							if (isNearBottom) scrollToBottom();
+						if (buf || thinkBuf) {
+							setStream(jobSessionId, { streamBuffer: buf, thinkingBuffer: thinkBuf });
+							// Only auto-scroll if this job's session is the one on screen.
+							if (activeSessionId === jobSessionId) {
+								await tick();
+								if (isNearBottom) scrollToBottom();
+							}
 						}
 						if (done) break;
 					}
 				} catch (e) {
-					// Aborted by a session switch / regenerate — propagate so the
-					// outer catch/finally tears down without persisting.
-					if ((e as Error)?.name === 'AbortError' || abortCtl?.signal.aborted) throw e;
+					// Aborted (session deleted / regenerate / cancel) — propagate so
+					// the outer catch/finally tears down without persisting.
+					if ((e as Error)?.name === 'AbortError' || ctl.signal.aborted) throw e;
 					// Otherwise a transient stream drop — fall through to reconnect.
 				}
 
@@ -340,39 +378,44 @@
 				await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** (attempts - 1), 8000)));
 			}
 
-			// Only persist if we're still on the session that owns this job.
-			if (activeSessionId === jobSessionId && streamBuffer.trim()) {
+			// Always persist to the backend — the job owns its session no
+			// matter which chat is on screen.
+			if (buf.trim()) {
 				try {
 					await api(`/v1/sessions/${jobSessionId}/messages`, {
 						method: 'POST',
-						body: { role: 'assistant', content: streamBuffer }
+						body: { role: 'assistant', content: buf }
 					});
 				} catch (e) {
 					console.warn('persist assistant message failed', e);
 				}
-				const localMsgId = `local-${Date.now()}`;
-				messages = [
-					...messages,
-					{
-						id: localMsgId,
-						session_id: jobSessionId,
-						role: 'assistant',
-						content: streamBuffer,
-						created_at: new Date().toISOString()
+				// Reflect into the live message list only if this session is
+				// currently visible. If not, selectSession reloads it later.
+				if (activeSessionId === jobSessionId) {
+					const localMsgId = `local-${Date.now()}`;
+					messages = [
+						...messages,
+						{
+							id: localMsgId,
+							session_id: jobSessionId,
+							role: 'assistant',
+							content: buf,
+							created_at: new Date().toISOString()
+						}
+					];
+					if (thinkBuf.trim()) {
+						thinkings = new Map(thinkings).set(localMsgId, thinkBuf.trim());
 					}
-				];
-				// Persist thinking buffer so it survives stream-end.
-				if (thinkingBuffer.trim()) {
-					thinkings = new Map(thinkings).set(localMsgId, thinkingBuffer.trim());
 				}
 			}
 
 			// Auto-rename session on first turn if title is still default.
-			// Skip if the user navigated away mid-stream.
-			if (activeSessionId === jobSessionId && (activeSession?.title || '').match(/^(New chat|Untitled|)$/)) {
+			const jobSession = sessions.find((s) => s.id === jobSessionId);
+			if ((jobSession?.title || '').match(/^(New chat|Untitled|)$/)) {
 				try {
-					const firstUser = messages.find((m) => m.role === 'user');
-					const firstAssistant = messages.find((m) => m.role === 'assistant');
+					const fresh0 = await api<Session & { messages?: Message[] }>(`/v1/sessions/${jobSessionId}`);
+					const firstUser = (fresh0.messages || []).find((m) => m.role === 'user');
+					const firstAssistant = (fresh0.messages || []).find((m) => m.role === 'assistant');
 					await api(`/v1/sessions/${jobSessionId}/auto-rename`, {
 						method: 'POST',
 						body: {
@@ -381,43 +424,44 @@
 						}
 					});
 					const fresh = await api<Session>(`/v1/sessions/${jobSessionId}`);
-					if (fresh.title && activeSession) {
-						activeSession = { ...activeSession, title: fresh.title };
+					if (fresh.title) {
 						sessions = sessions.map((s) => (s.id === jobSessionId ? { ...s, title: fresh.title } : s));
+						if (activeSessionId === jobSessionId && activeSession) {
+							activeSession = { ...activeSession, title: fresh.title };
+						}
 					}
 				} catch {
 					/* best effort */
 				}
 			}
 		} catch (e) {
-			// Aborts from session-switch/regenerate are intentional — stay quiet.
+			// Aborts (deleted session / regenerate / cancel) are intentional.
 			if ((e as Error)?.name !== 'AbortError') {
 				toasts.show(`Send failed: ${(e as Error).message}`, 'error');
 			}
 		} finally {
-			// Only clear the streaming flag if this job still owns the view.
-			// A newer job (after switch-back) may already be streaming.
-			if (activeSessionId === jobSessionId) {
-				streaming = false;
-				streamBuffer = '';
-				thinkingBuffer = '';
-			}
-			if (abortCtl?.signal.aborted) abortCtl = null;
+			// Tear down this session's stream record only — never touch others.
+			clearStream(jobSessionId);
 		}
 	}
 
 	async function send() {
 		const text = composer.trim();
-		if (!text || streaming) return;
+		// Block only if THIS session is already streaming — other sessions
+		// may stream in parallel.
+		if (!text || getStream(activeSessionId)?.streaming) return;
 		if (!activeSessionId) {
 			await newSession();
 			if (!activeSessionId) return;
 		}
+		const sessionId = activeSessionId!;
+		const model = activeSession?.model || defaultModel;
+		const projectId = activeSession?.project_id || null;
 		composer = '';
 
 		const optimistic: Message = {
 			id: `tmp-${Date.now()}`,
-			session_id: activeSessionId!,
+			session_id: sessionId,
 			role: 'user',
 			content: text,
 			created_at: new Date().toISOString()
@@ -426,8 +470,10 @@
 		await tick();
 		scrollToBottom();
 
+		const history = messages.slice(0, -1);
+
 		try {
-			await api(`/v1/sessions/${activeSessionId}/messages`, {
+			await api(`/v1/sessions/${sessionId}/messages`, {
 				method: 'POST',
 				body: { role: 'user', content: text }
 			});
@@ -435,11 +481,14 @@
 			toasts.show(`Persist failed: ${(e as Error).message}`, 'error');
 		}
 
-		await runJob({ history: messages.slice(0, -1), nextUser: text });
+		await runJob({ sessionId, model, projectId, history, nextUser: text });
 	}
 
 	async function regenerate(msgId: string, overrideModel?: string) {
-		if (streaming) return;
+		if (!activeSessionId || getStream(activeSessionId)?.streaming) return;
+		const sessionId = activeSessionId;
+		const model = overrideModel || activeSession?.model || defaultModel;
+		const projectId = activeSession?.project_id || null;
 		const idx = messages.findIndex((m) => m.id === msgId);
 		if (idx < 0) return;
 		const m = messages[idx];
@@ -452,13 +501,14 @@
 
 		// Delete the assistant message we're replacing.
 		try {
-			await api(`/v1/sessions/${activeSessionId}/messages/${msgId}`, { method: 'DELETE' });
+			await api(`/v1/sessions/${sessionId}/messages/${msgId}`, { method: 'DELETE' });
 		} catch {
 			/* tolerate — may be a local-only id */
 		}
 		messages = messages.slice(0, idx);
+		const history = messages.slice(0, userIdx);
 		regenPopover = { msgId: null, x: 0, y: 0 };
-		await runJob({ history: messages.slice(0, userIdx), nextUser: userText, overrideModel });
+		await runJob({ sessionId, model, projectId, history, nextUser: userText });
 	}
 
 	function copyMessage(content: string) {
@@ -620,6 +670,9 @@
 						onkeydown={(e) => { if (e.key === 'Enter') selectSession(s.id); }}
 					>
 						<div class="session-title">{s.title || 'Untitled'}</div>
+						{#if getStream(s.id)?.streaming}
+							<Loader2 size={12} strokeWidth={2} class="spin-icon session-streaming" />
+						{/if}
 						<button
 							class="btn btn-ghost btn-icon session-delete"
 							type="button"

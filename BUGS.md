@@ -27,6 +27,29 @@ _(none — alle bekannten Bugs gefixt 2026-05-25)_
 
 ## Gefixte Bugs
 
+### BUG-F13: Chat-UI — Streams, Delete, Live-Formatierung, Parallel-Chats (SvelteKit)
+**Status**: gefixt (2026-05-30)
+**Symptom (4 Bugs)**:
+1. Stream eines Chats lief beim Session-Wechsel in den neuen Chat / wurde dort persistiert.
+2. Chat brach mitten im Stream an zufälliger Stelle ab ("continue" half).
+3. Bash/Code-Blöcke blieben Plaintext bis der Stream fertig war.
+4. Delete (Sessions, Env, Memory) tat nichts.
+5. **Zwei parallele Chats: der erste brach ab sobald der zweite startete.**
+**Root causes**:
+- (1+5) `runJob` schrieb in modul-globale `streaming/streamBuffer/messages/abortCtl` — ein einziger Stream-Slot. Session-Wechsel überschrieb/abortete den laufenden Stream.
+- (2) `sseStream` war ein nackter fetch-Reader ohne Reconnect; jeder Connection-Drop beendete die Schleife. Backend konnte längst per `last_event_id` replayen.
+- (3) `marked` rendert eine offene ` ``` `-Fence als Plaintext bis die schließende Fence ankommt.
+- (4) `window.confirm` ist im Tauri-WebKit ein No-op → jeder Delete brach vorher ab.
+**Fix**:
+- Per-Session `StreamState`-Map (`streamStates`) statt Singletons. Jeder Job hat eigene Buffer + AbortController, läuft unabhängig + persistiert immer ans Backend. View rendert via `$derived`-Getter den Record der aktiven Session. **Echte parallele Streams.** Sidebar zeigt Spinner pro laufendem Chat.
+- `sseStream`-Consume in Reconnect-Schleife: trackt `last_event_id`, reconnectet mit Backoff bis `job_finished` (max 6 Versuche).
+- `Markdown.svelte` schließt offene Fence vor `marked.parse`.
+- Globaler `confirmStore` + `<ConfirmModal>` im Layout; alle 3 Confirm-Stellen umgehängt.
+**Files**: `web/src/routes/+page.svelte`, `web/src/lib/Markdown.svelte`, `web/src/lib/stores.svelte.ts`, `web/src/lib/ConfirmModal.svelte` (neu), `web/src/routes/+layout.svelte`, `web/src/routes/env/+page.svelte`, `web/src/routes/memory/+page.svelte`, `api/datastore.py` (FTS-Cleanup bei delete_session).
+**Verifiziert**: Browser-Test 2 parallele Chats — beide vollständig (30/30 Zeilen), erster nicht abgebrochen. Delete-Modal erscheint, native confirm nicht aufgerufen.
+
+---
+
 ### BUG-F10: Voice-Button — Transkript erscheint nicht (ohne Whisper)
 **Status**: gefixt (2026-05-25, commit `40613e4`)
 **Root cause**: Mic-Button war immer aktiv, auch wenn `WHISPER_BINARY` ungesetzt + `WHISPER_DEVICE=cpu` (= keine Backend-Konfiguration). User klickte, sprach, bekam 503 mit zerfasertem `detail`-String den der toast halbwegs zeigte — aber kein Hinweis dass der Backend gar nicht erst aufzurufen ist.

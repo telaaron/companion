@@ -533,7 +533,20 @@ def upsert_session(
 
 def delete_session(session_id: str) -> None:
     with _connect() as conn:
+        # Collect message IDs before cascade deletes remove them.
+        msg_ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM messages WHERE session_id=?", (session_id,)
+            ).fetchall()
+        ]
+        # Delete session (cascade deletes messages, agent_jobs, agent_job_events).
         conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+        # Clean up orphaned FTS entries for the deleted messages.
+        for mid in msg_ids:
+            conn.execute(
+                "DELETE FROM memory_fts WHERE kind='message' AND ref=?", (mid,)
+            )
 
 
 def append_message(*, session_id: str, role: str, content: str) -> dict[str, Any]:

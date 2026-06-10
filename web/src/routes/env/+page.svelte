@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { toasts, confirmStore } from '$lib/stores.svelte';
+	import InfoBanner from '$lib/InfoBanner.svelte';
 	import PageHeader from '$lib/PageHeader.svelte';
 	import { Save, Trash2, Plus, Eye, EyeOff, Copy } from 'lucide-svelte';
 
@@ -65,6 +66,11 @@
 <PageHeader title="Env vault" sub={path || 'Persistent environment variables for the proxy'} />
 
 <div class="page-body">
+	<InfoBanner
+		title="What is the env vault for?"
+		storageKey="env"
+		body="A single place to store API keys, tokens and config the agent needs (e.g. GITHUB_TOKEN, OPENAI_API_KEY). Values are written to a local .env file on your machine — never uploaded, never sent to any model. Secrets are hidden by default; reveal with the eye icon. When the agent needs a key it can look it up here on request, so you don't paste secrets into chat."
+	/>
 	<div class="card" style="margin-bottom: var(--sp-4)">
 		<div class="card-title">Add new key</div>
 		<div class="row gap-2 align-center">

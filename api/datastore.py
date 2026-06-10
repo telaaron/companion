@@ -1665,6 +1665,9 @@ def record_routine_run(
     return dict(row) if row else {}
 
 
+_ROUTINE_TERMINAL = ("done", "error", "cancelled")
+
+
 def update_routine_run(
     run_id: str,
     *,
@@ -1672,18 +1675,45 @@ def update_routine_run(
     job_id: str | None = None,
     finished_at: int | None = None,
 ) -> None:
-    now = finished_at if finished_at is not None else _ts()
+    # finished_at is only meaningful for terminal states. A "running" update
+    # must NOT stamp finished_at — otherwise the run looks both running and
+    # finished (the old bug where every run sat at "running" with a finish
+    # time 3ms after start).
+    fin: int | None
+    if finished_at is not None:
+        fin = finished_at
+    elif status in _ROUTINE_TERMINAL:
+        fin = _ts()
+    else:
+        fin = None
     with _connect() as conn:
         if job_id is not None:
             conn.execute(
                 "UPDATE routine_runs SET status=?, job_id=?, finished_at=? WHERE id=?",
-                (status, job_id, now, run_id),
+                (status, job_id, fin, run_id),
             )
         else:
             conn.execute(
                 "UPDATE routine_runs SET status=?, finished_at=? WHERE id=?",
-                (status, now, run_id),
+                (status, fin, run_id),
             )
+
+
+def sync_routine_run_for_job(job_id: str, status: str) -> None:
+    """Propagate a job's terminal status onto its routine_run, if any.
+
+    Routine-fired jobs create a routine_run row in 'running'. The job
+    lifecycle (jobs.py) owns the actual completion, so when the job reaches a
+    terminal state we mirror it here. No-op for non-routine jobs.
+    """
+    if status not in _ROUTINE_TERMINAL:
+        return
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE routine_runs SET status=?, finished_at=?"
+            " WHERE job_id=? AND status NOT IN ('done','error','cancelled')",
+            (status, _ts(), job_id),
+        )
 
 
 def list_routine_runs(

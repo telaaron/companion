@@ -259,7 +259,11 @@ def client():
 
 class TestSkillsLocalRoute:
     def test_local_returns_list(self, client: TestClient, tmp_path: Path):
-        with patch("api.dashboard_routes._REPO_SKILLS_ROOT", _FIXTURES_SKILLS):
+        # Isolate the ~/.claude scan so the test is deterministic.
+        with (
+            patch("api.dashboard_routes._REPO_SKILLS_ROOT", _FIXTURES_SKILLS),
+            patch("api.dashboard_routes._SKILL_DIRS", ()),
+        ):
             resp = client.get("/v1/skills/local")
         assert resp.status_code == 200
         data = resp.json()
@@ -270,10 +274,37 @@ class TestSkillsLocalRoute:
     def test_local_empty_when_no_skills(self, client: TestClient, tmp_path: Path):
         empty_dir = tmp_path / "empty_skills"
         empty_dir.mkdir()
-        with patch("api.dashboard_routes._REPO_SKILLS_ROOT", empty_dir):
+        # Empty both sources: repo-root and the ~/.claude skill dirs.
+        with (
+            patch("api.dashboard_routes._REPO_SKILLS_ROOT", empty_dir),
+            patch("api.dashboard_routes._SKILL_DIRS", ()),
+        ):
             resp = client.get("/v1/skills/local")
         assert resp.status_code == 200
         assert resp.json()["skills"] == []
+
+    def test_local_includes_claude_skills(self, client: TestClient, tmp_path: Path):
+        # A skill present only under the ~/.claude scan dirs must surface.
+        repo_empty = tmp_path / "repo_empty"
+        repo_empty.mkdir()
+        claude_dir = tmp_path / "claude_skills"
+        skill_dir = claude_dir / "my-claude-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\ndescription: A test skill from claude\n---\n", encoding="utf-8"
+        )
+        with (
+            patch("api.dashboard_routes._REPO_SKILLS_ROOT", repo_empty),
+            patch("api.dashboard_routes._SKILL_DIRS", (claude_dir,)),
+        ):
+            resp = client.get("/v1/skills/local")
+        assert resp.status_code == 200
+        skills = resp.json()["skills"]
+        names = [s["name"] for s in skills]
+        assert "my-claude-skill" in names
+        claude_skill = next(s for s in skills if s["name"] == "my-claude-skill")
+        assert claude_skill["source"] == "claude"
+        assert claude_skill["installed"] is True
 
 
 class TestSkillsCatalogRoute:

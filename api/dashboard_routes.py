@@ -945,20 +945,54 @@ _CATALOG_FETCH_TIMEOUT_S = 10.0
 
 
 def _local_skills_list() -> list[dict[str, Any]]:
-    """Return installed skills from the repo-root ``skills/`` directory."""
+    """Return installed skills.
+
+    Two sources are merged so the UI shows everything the user already has:
+    1. Repo-root ``skills/`` directory (Companion's own bundled skills).
+    2. The user's Claude Code skills under ``~/.claude`` (``_scan_skills``),
+       which is where the 70+ skills from the CLI live. Previously only (1)
+       was surfaced, so a fresh install showed "0 skills".
+    """
     from api.agent.extras.skills import scan_skills
 
-    skills = scan_skills(_REPO_SKILLS_ROOT)
-    return [
-        {
-            "name": s.name,
-            "slug": s.slug,
-            "description": s.description,
-            "entry": s.entry,
-            "path": str(s.path),
-        }
-        for s in skills
-    ]
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for s in scan_skills(_REPO_SKILLS_ROOT):
+        seen.add(s.slug)
+        out.append(
+            {
+                "id": s.slug,
+                "name": s.name,
+                "slug": s.slug,
+                "description": s.description,
+                "entry": s.entry,
+                "path": str(s.path),
+                "source": "repo",
+                "installed": True,
+            }
+        )
+
+    for sk in _scan_skills():
+        slug = sk["name"]
+        if slug in seen:
+            continue
+        seen.add(slug)
+        out.append(
+            {
+                "id": slug,
+                "name": sk["name"],
+                "slug": slug,
+                "description": sk.get("description", ""),
+                "entry": "",
+                "path": sk.get("path", ""),
+                "source": "claude",
+                "installed": True,
+            }
+        )
+
+    out.sort(key=lambda s: s["name"].lower())
+    return out
 
 
 @dashboard_router.get("/v1/skills/local")

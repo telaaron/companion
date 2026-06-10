@@ -4,7 +4,11 @@
 	import { toasts } from '$lib/stores.svelte';
 	import PageHeader from '$lib/PageHeader.svelte';
 	import { Search, FolderKanban } from 'lucide-svelte';
-	import { diffLines, type Change } from 'diff';
+
+	interface DiffLine {
+		sign: '+' | '-' | ' ' | '@';
+		text: string;
+	}
 
 	interface FileEdit {
 		id: number;
@@ -23,7 +27,7 @@
 	let loading = $state(true);
 	let active = $state<FileEdit | null>(null);
 	let preview = $state<string>('');
-	let diffs = $state<Change[]>([]);
+	let diffLines = $state<DiffLine[]>([]);
 	let previewLoading = $state(false);
 	let searchQuery = $state('');
 
@@ -43,28 +47,45 @@
 		}
 	}
 
+	function parseUnifiedDiff(raw: string): DiffLine[] {
+		const out: DiffLine[] = [];
+		for (const line of raw.split('\n')) {
+			if (line.startsWith('--- ') || line.startsWith('+++ ')) continue;
+			if (line.startsWith('@@')) out.push({ sign: '@', text: line });
+			else if (line.startsWith('+')) out.push({ sign: '+', text: line.slice(1) });
+			else if (line.startsWith('-')) out.push({ sign: '-', text: line.slice(1) });
+			else out.push({ sign: ' ', text: line.startsWith(' ') ? line.slice(1) : line });
+		}
+		// Trim trailing empty context line the splitter leaves behind.
+		while (out.length && out[out.length - 1].sign === ' ' && out[out.length - 1].text === '') out.pop();
+		return out;
+	}
+
 	async function openEdit(e: FileEdit) {
 		active = e;
 		preview = '';
-		diffs = [];
+		diffLines = [];
 		previewLoading = true;
 		try {
-			const data = await api<{ content: string }>(`/v1/preview/file`, {
-				query: { path: e.path, session_id: e.session_id || '' }
-			});
-			const current = data.content || '';
-
-			// Try to compute a diff from metadata
+			// The backend already stored a unified diff in metadata.diff — use
+			// it directly (no need to refetch + recompute). Fall back to a
+			// plain preview only when no diff was recorded (e.g. binary write).
 			let meta: Record<string, unknown> = {};
 			try {
 				meta = e.metadata ? JSON.parse(e.metadata) : {};
 			} catch { /* ignore */ }
 
-			const beforeText = typeof meta.before_text === 'string' && meta.before_text ? meta.before_text : null;
-			if (beforeText && current) {
-				diffs = diffLines(beforeText, current);
+			const diffStr = typeof meta.diff === 'string' ? meta.diff : '';
+			if (diffStr.trim()) {
+				diffLines = parseUnifiedDiff(diffStr);
+				previewLoading = false;
+				return;
 			}
-			preview = current;
+
+			const data = await api<{ content: string }>(`/v1/preview/file`, {
+				query: { path: e.path, session_id: e.session_id || '' }
+			});
+			preview = data.content || '';
 		} catch (err) {
 			preview = `(unable to load preview: ${(err as Error).message})`;
 		} finally {
@@ -181,24 +202,18 @@
 			<div class="card-title mono" style="margin-bottom: var(--sp-2)">{active.path}</div>
 			{#if previewLoading}
 				<div class="empty"><span class="spinner"></span> Loading preview…</div>
-			{:else if diffs.length > 0}
-				<div class="diff-viewer" style="overflow: auto; flex: 1; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all">
-					{#each diffs as hunk, i (i)}
-						{#each hunk.value.split('\n') as line, j}
-							{#if line !== '' || j < hunk.value.split('\n').length - 1}
-								<div
-									class="diff-line"
-									class:diff-add={hunk.added}
-									class:diff-rem={hunk.removed}
-									style={hunk.added ? 'background: rgba(34, 197, 94, 0.1)' : hunk.removed ? 'background: rgba(239, 68, 68, 0.1)' : ''}
-								>
-									<span class="diff-sign" style="width: 20px; display: inline-block; text-align: center; color: var(--fg-dim); user-select: none; flex-shrink: 0">
-										{hunk.added ? '+' : hunk.removed ? '−' : ' '}
-									</span>
-									<span>{line}</span>
-								</div>
-							{/if}
-						{/each}
+			{:else if diffLines.length > 0}
+				<div class="diff-viewer">
+					{#each diffLines as line, i (i)}
+						<div
+							class="diff-line"
+							class:diff-add={line.sign === '+'}
+							class:diff-rem={line.sign === '-'}
+							class:diff-hunk={line.sign === '@'}
+						>
+							<span class="diff-sign">{line.sign === '@' ? '' : line.sign}</span>
+							<span class="diff-text">{line.text}</span>
+						</div>
 					{/each}
 				</div>
 			{:else}
@@ -225,10 +240,46 @@
 	}
 	.edit-row:hover { background: var(--bg-hover); }
 	.edit-row.active { background: var(--bg-active); }
+	.diff-viewer {
+		overflow: auto;
+		flex: 1;
+		font-family: ui-monospace, monospace;
+		font-size: 12px;
+		line-height: 1.55;
+	}
 	.diff-line {
 		display: flex;
+		white-space: pre-wrap;
+		word-break: break-all;
+		padding: 0 4px;
 	}
 	.diff-sign {
+		width: 16px;
+		display: inline-block;
+		text-align: center;
+		color: var(--fg-dim);
+		user-select: none;
 		flex-shrink: 0;
+	}
+	.diff-text {
+		flex: 1;
+	}
+	.diff-add {
+		background: rgba(34, 197, 94, 0.12);
+	}
+	.diff-add .diff-sign {
+		color: rgb(34, 197, 94);
+	}
+	.diff-rem {
+		background: rgba(239, 68, 68, 0.12);
+	}
+	.diff-rem .diff-sign {
+		color: rgb(239, 68, 68);
+	}
+	.diff-hunk {
+		background: var(--bg-input);
+		color: var(--fg-muted);
+		margin: 4px 0;
+		font-size: 11px;
 	}
 </style>

@@ -3,6 +3,7 @@
 	import { api } from '$lib/api';
 	import { toasts } from '$lib/stores.svelte';
 	import PageHeader from '$lib/PageHeader.svelte';
+	import InfoBanner from '$lib/InfoBanner.svelte';
 	import { FileText, Save } from 'lucide-svelte';
 
 	interface RootFile {
@@ -70,7 +71,14 @@
 	{/snippet}
 </PageHeader>
 
-<div class="page-body" style="display: grid; grid-template-columns: 240px 1fr; gap: var(--sp-4); height: calc(100vh - 110px)">
+<div class="page-body" style="padding-bottom: 0">
+	<InfoBanner
+		title="What are root files?"
+		storageKey="root"
+		body="A short allowlist of project files you can edit straight from the browser — CLAUDE.md, BUGS.md, AGENTS.md and the like. These are the instruction files the agent reads first, so editing them here changes how it behaves. Everything stays local on disk; only files on the allowlist are reachable, so the agent can't browse your whole machine from here."
+	/>
+</div>
+<div class="page-body" style="display: grid; grid-template-columns: 240px 1fr; gap: var(--sp-4); height: calc(100vh - 190px)">
 	<div class="card" style="overflow-y: auto; padding: var(--sp-2)">
 		{#if loading}<span class="spinner"></span>
 		{:else if files.length === 0}<div class="empty">No root files</div>

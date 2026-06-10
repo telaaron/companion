@@ -5,7 +5,7 @@
 	import type { Project } from '$lib/types';
 	import PageHeader from '$lib/PageHeader.svelte';
 	import FolderPicker from '$lib/FolderPicker.svelte';
-	import { Plus, Trash2, FolderOpen, FolderSearch, Pin, X, MessageSquare } from 'lucide-svelte';
+	import { Plus, Trash2, FolderSearch, Pin, X, MessageSquare } from 'lucide-svelte';
 	import { goto } from '$app/navigation';
 	import { base } from '$app/paths';
 
@@ -238,18 +238,21 @@
 	{:else if projects.length === 0}
 		<div class="empty">No projects yet. Click "New project" to start.</div>
 	{:else}
-		<div class="col" style="gap: var(--sp-4)">
+		<div class="project-grid">
 			{#each projects as p (p.id)}
-				<div class="card" style={p.color ? `border-left: 3px solid ${p.color}` : ''}>
-					<div class="row justify-between align-center" style="margin-bottom: var(--sp-3)">
-						<h3 style="margin: 0; font-size: var(--fs-16)">{p.name}</h3>
-						<div class="row gap-2">
-							<button
-								class="btn btn-primary btn-sm"
-								type="button"
-								onclick={() => startChat(p)}
-							>
-								<MessageSquare size={12} strokeWidth={2} /> Start chat
+				<div class="card project-card" style={p.color ? `border-left: 3px solid ${p.color}` : ''}>
+					<div class="row justify-between align-center" style="gap: var(--sp-2)">
+						<div style="min-width: 0">
+							<h3 class="truncate" style="margin: 0; font-size: var(--fs-15)">{p.name}</h3>
+							{#if p.workspace_path}
+								<div class="mono truncate" style="font-size: 11px; color: var(--fg-muted); margin-top: 2px">{p.workspace_path}</div>
+							{:else}
+								<div style="font-size: 11px; color: var(--fg-dim); margin-top: 2px">no workspace</div>
+							{/if}
+						</div>
+						<div class="row gap-1" style="flex-shrink: 0">
+							<button class="btn btn-primary btn-sm" type="button" onclick={() => startChat(p)} title="Start chat">
+								<MessageSquare size={12} strokeWidth={2} />
 							</button>
 							<button class="btn btn-ghost btn-icon" type="button" onclick={() => remove(p.id)} title="Delete project">
 								<Trash2 size={14} strokeWidth={2} />
@@ -257,7 +260,16 @@
 						</div>
 					</div>
 
-					<div class="grid-2col">
+					<div class="row gap-2 align-center" style="margin-top: var(--sp-2); font-size: 11px; color: var(--fg-muted)">
+						<span class="row align-center gap-1"><Pin size={11} strokeWidth={2} /> {memoriesById[p.id]?.length ?? 0}</span>
+						<span>·</span>
+						<span>{new Date(p.created_at).toLocaleDateString()}</span>
+					</div>
+
+					<details class="project-details">
+						<summary>Edit details</summary>
+
+					<div class="grid-2col" style="margin-top: var(--sp-3)">
 						<div>
 							<div class="form-label">Description</div>
 							<input
@@ -344,13 +356,7 @@
 							</button>
 						</div>
 					</div>
-
-					<div class="row gap-2 align-center" style="margin-top: var(--sp-3); font-size: 11px; color: var(--fg-muted)">
-						<FolderOpen size={12} strokeWidth={2} />
-						<span class="mono">{p.id.slice(0, 8)}</span>
-						<span>·</span>
-						<span>created {new Date(p.created_at).toLocaleDateString()}</span>
-					</div>
+					</details>
 				</div>
 			{/each}
 		</div>
@@ -378,6 +384,30 @@
 {/if}
 
 <style>
+	.project-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+		gap: var(--sp-3);
+	}
+	.project-card {
+		align-self: start;
+	}
+	.project-details {
+		margin-top: var(--sp-3);
+	}
+	.project-details > summary {
+		cursor: pointer;
+		font-size: 12px;
+		color: var(--fg-muted);
+		user-select: none;
+		list-style-position: inside;
+	}
+	.project-details > summary:hover {
+		color: var(--fg);
+	}
+	.project-details[open] > summary {
+		margin-bottom: var(--sp-2);
+	}
 	.grid-2col {
 		display: grid;
 		grid-template-columns: 1fr 1fr;

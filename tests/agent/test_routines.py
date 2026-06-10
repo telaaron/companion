@@ -126,6 +126,53 @@ class TestRoutineDatastoreHelpers:
         d = dict(row)
         assert d["status"] == "running"
         assert d["job_id"] == "job_abc"
+        # A 'running' update must NOT stamp finished_at (the perpetual-running
+        # bug); finish time only lands on a terminal status.
+        assert d["finished_at"] is None
+
+    def test_update_routine_run_terminal_stamps_finished(self, tmp_path):
+        ds = _make_db(tmp_path)
+        r = ds.create_routine(name="r")
+        run = ds.record_routine_run(routine_id=r["id"], status="pending")
+        ds.update_routine_run(run["id"], status="running", job_id="job_x")
+        ds.update_routine_run(run["id"], status="done")
+        from api import datastore
+
+        with datastore._connect() as conn:
+            d = dict(
+                conn.execute(
+                    "SELECT * FROM routine_runs WHERE id=?", (run["id"],)
+                ).fetchone()
+            )
+        assert d["status"] == "done"
+        assert d["finished_at"] is not None
+
+    def test_sync_routine_run_for_job(self, tmp_path):
+        ds = _make_db(tmp_path)
+        r = ds.create_routine(name="r")
+        run = ds.record_routine_run(routine_id=r["id"], status="pending")
+        ds.update_routine_run(run["id"], status="running", job_id="job_sync")
+        # Job finishes → mirror onto the routine_run.
+        ds.sync_routine_run_for_job("job_sync", "done")
+        from api import datastore
+
+        with datastore._connect() as conn:
+            d = dict(
+                conn.execute(
+                    "SELECT * FROM routine_runs WHERE id=?", (run["id"],)
+                ).fetchone()
+            )
+        assert d["status"] == "done"
+        assert d["finished_at"] is not None
+        # Non-terminal status is a no-op.
+        ds.sync_routine_run_for_job("job_sync", "running")
+        with datastore._connect() as conn:
+            d2 = dict(
+                conn.execute(
+                    "SELECT status FROM routine_runs WHERE id=?", (run["id"],)
+                ).fetchone()
+            )
+        assert d2["status"] == "done"
 
 
 # ---------------------------------------------------------------------------

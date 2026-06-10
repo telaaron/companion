@@ -90,6 +90,9 @@ async def _persist_status(job_id: str, status: str, *, error: str = "") -> None:
     await asyncio.to_thread(
         datastore.mark_agent_job_status, job_id, status, error=error
     )
+    # Mirror terminal status onto any routine_run that fired this job so the
+    # Routines history stops showing perpetual "running".
+    await asyncio.to_thread(datastore.sync_routine_run_for_job, job_id, status)
     _notify_job_event(job_id)
 
 

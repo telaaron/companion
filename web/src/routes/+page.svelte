@@ -18,6 +18,19 @@
 	let messagesEl: HTMLDivElement | undefined = $state();
 	let isNearBottom = $state(true);
 
+	// Per-chat token + cost counter shown in the header.
+	let sessionUsage = $state<{ input_tokens: number; output_tokens: number; cost_usd: number } | null>(null);
+
+	async function loadSessionUsage(id: string) {
+		try {
+			sessionUsage = await api<{ input_tokens: number; output_tokens: number; cost_usd: number }>(
+				`/v1/sessions/${id}/usage`
+			);
+		} catch {
+			sessionUsage = null;
+		}
+	}
+
 	// Per-session stream state. Each running job keeps its own buffers and
 	// abort controller so multiple chats stream in parallel — switching the
 	// visible session never tears down another session's in-flight job. The
@@ -189,6 +202,8 @@
 		// message lands via the fresh load below once it finishes.
 		activeSessionId = id;
 		messages = [];
+		sessionUsage = null;
+		void loadSessionUsage(id);
 		try {
 			const data = await api<Session & { messages?: Message[] }>(`/v1/sessions/${id}`);
 			activeSession = data;
@@ -392,6 +407,13 @@
 				// currently visible. If not, selectSession reloads it later.
 				if (activeSessionId === jobSessionId) {
 					const localMsgId = `local-${Date.now()}`;
+					// Clear the streaming record BEFORE appending the final
+					// message. Otherwise the live streaming bubble (driven by
+					// streamBuffer) and the just-appended message both render —
+					// the same answer twice — until the finally block fires
+					// after the auto-rename round-trips. Order: stop streaming,
+					// then append, so exactly one bubble is on screen.
+					clearStream(jobSessionId);
 					messages = [
 						...messages,
 						{
@@ -405,6 +427,8 @@
 					if (thinkBuf.trim()) {
 						thinkings = new Map(thinkings).set(localMsgId, thinkBuf.trim());
 					}
+					// Refresh the per-chat token/cost counter now the turn landed.
+					void loadSessionUsage(jobSessionId);
 				}
 			}
 
@@ -607,6 +631,15 @@
 	// vanilla UI: pinned project sections at the top, unlinked chats
 	// under a final "No project" bucket. Projects with no sessions are
 	// hidden so the sidebar stays compact.
+	// Most-recent-first ordering: the newest chat sits at the top, and its
+	// whole project group bubbles up with it. We sort sessions inside each
+	// bucket by updated_at desc, then order the buckets by their newest
+	// session's updated_at desc.
+	function sessionTime(s: Session): number {
+		const v = Number(s.updated_at ?? s.created_at ?? 0);
+		return Number.isFinite(v) ? v : 0;
+	}
+
 	let groupedSessions = $derived.by(() => {
 		const buckets = new Map<string | null, { name: string; sessions: Session[] }>();
 		const projectName = new Map<string, string>();
@@ -623,19 +656,20 @@
 			buckets.get(key)!.sessions.push(s);
 		}
 
-		const orderedKeys: Array<string | null> = [];
-		// Project order follows the projects array; null bucket last.
-		for (const p of projects) {
-			if (buckets.has(p.id)) orderedKeys.push(p.id);
+		// Newest chat first within each group.
+		for (const b of buckets.values()) {
+			b.sessions.sort((a, c) => sessionTime(c) - sessionTime(a));
 		}
-		if (buckets.has(null)) orderedKeys.push(null);
-		// Catch any project ids the projects array didn't cover.
-		for (const k of buckets.keys()) {
-			if (k !== null && !projectName.has(k as string) && !orderedKeys.includes(k)) {
-				orderedKeys.push(k);
-			}
-		}
-		return orderedKeys.map((k) => ({ key: k, ...buckets.get(k)! }));
+
+		// Groups ordered by their newest chat, so the project holding the most
+		// recent activity floats to the top.
+		const entries = [...buckets.entries()].map(([key, bucket]) => ({
+			key,
+			...bucket,
+			newest: bucket.sessions.length ? sessionTime(bucket.sessions[0]) : 0
+		}));
+		entries.sort((a, b) => b.newest - a.newest);
+		return entries;
 	});
 
 	function fmtTime(iso: string): string {
@@ -700,7 +734,13 @@
 	<section class="chat-main">
 		<header class="chat-header">
 			<div class="row gap-3 align-center" style="flex: 1; min-width: 0">
-				<h2 class="chat-title">{activeSession?.title || 'Chat'}</h2>
+				<h2 class="chat-title truncate">{activeSession?.title || 'Chat'}</h2>
+				{#if sessionUsage && (sessionUsage.input_tokens || sessionUsage.output_tokens)}
+					<span class="usage-badge" title="Tokens and cost for this chat">
+						{((sessionUsage.input_tokens + sessionUsage.output_tokens) / 1000).toFixed(1)}k tok
+						· ${sessionUsage.cost_usd.toFixed(4)}
+					</span>
+				{/if}
 			</div>
 			{#if activeSessionId}
 				<div class="row gap-2 align-center">
@@ -964,6 +1004,17 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.usage-badge {
+		flex-shrink: 0;
+		font-size: 11px;
+		color: var(--fg-muted);
+		background: var(--bg-input);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 2px 8px;
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
 	}
 	.picker-label {
 		display: flex;

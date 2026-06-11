@@ -273,6 +273,42 @@ _SKILL_RUN = ToolSpec(
 )
 
 
+_SKILL_CREATE = ToolSpec(
+    name="SkillCreate",
+    description=(
+        "Create a new reusable skill under skills/. Use this when the user "
+        "wants to build a skill together. Provide a 'name', a short "
+        "'description', the 'instructions' (the SKILL.md body describing when "
+        "and how to use it), and optionally 'entry_code' — a Python script "
+        "body that becomes the runnable entry point (invoked later via "
+        "SkillRun). Omit entry_code for a documentation-only skill."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Human-readable skill name."},
+            "description": {
+                "type": "string",
+                "description": "One-line summary of what the skill does.",
+            },
+            "instructions": {
+                "type": "string",
+                "description": "SKILL.md body: when/how to use the skill.",
+            },
+            "entry_code": {
+                "type": "string",
+                "description": (
+                    "Optional Python script body. Reads a JSON args object from "
+                    "argv[1], prints results to stdout."
+                ),
+            },
+        },
+        "required": ["name"],
+    },
+    executor=skills_executor.skill_create_execute,
+)
+
+
 register_extras(
     [
         _PROJECT_LIST,
@@ -284,6 +320,7 @@ register_extras(
         _IMAGINE,
         _SKILL_LIST,
         _SKILL_RUN,
+        _SKILL_CREATE,
         _PREFERENCE_SET,
         _PREFERENCE_DELETE,
         _PREFERENCE_LIST,

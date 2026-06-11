@@ -14,11 +14,13 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -1168,6 +1170,178 @@ async def install_skill(
     )
     logger.info("SKILLS: installed slug={} from {}", slug, download_url)
     return {"ok": True, "slug": slug, "path": str(dest_dir)}
+
+
+# ----------------------------------------------------------------- import/create
+
+
+def _safe_slug(slug: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9_-]+", "-", slug.strip().lower()).strip("-")
+    if not s:
+        raise HTTPException(400, "could not derive a valid slug")
+    return s
+
+
+def _within(base: Path, target: Path) -> bool:
+    base = base.resolve(strict=False)
+    target = target.resolve(strict=False)
+    return base == target or base in target.parents
+
+
+@dashboard_router.post("/v1/skills/import-claude/{slug}")
+async def import_claude_skill(
+    slug: str, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    """Copy a Claude Code skill (~/.claude) into the executable skills dir.
+
+    The ~/.claude skills are listed but live outside ``skills/`` so the agent
+    can't run them. This copies the skill folder into ``_REPO_SKILLS_ROOT`` so
+    SkillRun can invoke it, exactly like the bundled skills.
+    """
+    if not re.match(r"^[a-zA-Z0-9_-]+$", slug):
+        raise HTTPException(400, f"invalid slug: {slug!r}")
+
+    # Locate the source skill dir among the scan paths.
+    src: Path | None = None
+    for base in _SKILL_DIRS:
+        if not base.is_dir():
+            continue
+        for skill_md in base.rglob("SKILL.md"):
+            if skill_md.parent.name == slug:
+                src = skill_md.parent
+                break
+        if src:
+            break
+    if src is None:
+        raise HTTPException(404, f"claude skill {slug!r} not found")
+
+    dest = _REPO_SKILLS_ROOT / slug
+    _REPO_SKILLS_ROOT.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(str(src), str(dest))
+
+    datastore.record_audit(category="skills", event="install", detail=slug)
+    logger.info("SKILLS: imported claude skill {} from {}", slug, src)
+    return {"ok": True, "slug": slug, "path": str(dest)}
+
+
+@dashboard_router.post("/v1/skills/upload")
+async def upload_skill(
+    file: UploadFile = File(...),
+    _auth=Depends(require_api_key),
+) -> dict[str, Any]:
+    """Install a skill from an uploaded .zip, .tar.gz, or single SKILL.md.
+
+    The archive must contain a SKILL.md. The slug is taken from the top-level
+    folder name (or the uploaded filename for a bare SKILL.md). Every member is
+    validated to stay inside the destination dir.
+    """
+    filename = (file.filename or "skill").strip()
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "empty upload")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        extract_root = tmp / "extracted"
+        extract_root.mkdir()
+
+        low = filename.lower()
+        if low.endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                    for name in zf.namelist():
+                        if not _within(extract_root, extract_root / name):
+                            raise HTTPException(400, f"unsafe path in zip: {name!r}")
+                    zf.extractall(extract_root)
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(400, f"invalid zip: {exc}") from exc
+        elif low.endswith((".tar.gz", ".tgz")):
+            try:
+                with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tf:
+                    for member in tf.getmembers():
+                        if not _within(extract_root, extract_root / member.name):
+                            raise HTTPException(
+                                400, f"unsafe path in tar: {member.name!r}"
+                            )
+                    tf.extractall(extract_root)
+            except tarfile.TarError as exc:
+                raise HTTPException(400, f"invalid tarball: {exc}") from exc
+        elif low.endswith("skill.md") or low == "skill.md":
+            (extract_root / "SKILL.md").write_bytes(raw)
+        else:
+            raise HTTPException(
+                400, "unsupported upload — use .zip, .tar.gz, or a SKILL.md file"
+            )
+
+        # Find the dir that holds SKILL.md.
+        md_files = list(extract_root.rglob("SKILL.md"))
+        if not md_files:
+            raise HTTPException(400, "no SKILL.md found in upload")
+        skill_src = md_files[0].parent
+
+        # Derive slug: folder name, or filename stem for a flat SKILL.md.
+        derived = skill_src.name if skill_src != extract_root else Path(filename).stem
+        slug = _safe_slug(derived if derived not in ("extracted", "") else "skill")
+
+        dest = _REPO_SKILLS_ROOT / slug
+        _REPO_SKILLS_ROOT.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(str(skill_src), str(dest))
+
+    datastore.record_audit(category="skills", event="install", detail=slug)
+    logger.info("SKILLS: uploaded skill {} ({})", slug, filename)
+    return {"ok": True, "slug": slug, "path": str(dest)}
+
+
+class SkillCreateIn(BaseModel):
+    name: str
+    description: str = ""
+    instructions: str = ""
+    entry_code: str | None = None
+
+
+@dashboard_router.post("/v1/skills/create")
+async def create_skill(
+    body: SkillCreateIn, _auth=Depends(require_api_key)
+) -> dict[str, Any]:
+    """Scaffold a new skill: write SKILL.md (+ optional entry script).
+
+    Used both by the simple "create skill" form and by the agent-driven
+    skill-creator flow, which passes generated ``instructions`` and an
+    ``entry_code`` Python body.
+    """
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    slug = _safe_slug(name)
+    dest = _REPO_SKILLS_ROOT / slug
+    if dest.exists():
+        raise HTTPException(409, f"a skill named {slug!r} already exists")
+    dest.mkdir(parents=True, exist_ok=True)
+
+    has_entry = bool((body.entry_code or "").strip())
+    entry_name = "skill.py" if has_entry else ""
+
+    fm_lines = [
+        f"name: {name}",
+        f"description: {body.description.strip()}",
+    ]
+    if entry_name:
+        fm_lines.append(f"entry: {entry_name}")
+    skill_md = "\n".join(fm_lines) + "\n\n" + (body.instructions.strip() or name) + "\n"
+    (dest / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+    if has_entry:
+        (dest / entry_name).write_text(
+            (body.entry_code or "").rstrip() + "\n", encoding="utf-8"
+        )
+
+    datastore.record_audit(category="skills", event="create", detail=slug)
+    logger.info("SKILLS: created skill {} (entry={})", slug, bool(has_entry))
+    return {"ok": True, "slug": slug, "path": str(dest)}
 
 
 @dashboard_router.delete("/v1/skills/local/{slug}")

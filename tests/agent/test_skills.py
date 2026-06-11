@@ -529,3 +529,113 @@ class TestValidateTarPath:
         # Absolute paths strip the leading slash, so /etc/passwd → etc/passwd
         # which doesn't match the prefix "myskill/" → rejected
         assert _validate_tar_path("/etc/passwd", "myskill") is False
+
+
+# ---------------------------------------------------------------------------
+# Import + create endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestSkillImportCreate:
+    def test_create_skill(self, client: TestClient, tmp_path: Path):
+        root = tmp_path / "repo_skills"
+        root.mkdir()
+        with patch("api.dashboard_routes._REPO_SKILLS_ROOT", root):
+            resp = client.post(
+                "/v1/skills/create",
+                json={
+                    "name": "My Test Skill",
+                    "description": "does a thing",
+                    "instructions": "use when testing",
+                },
+            )
+        assert resp.status_code == 200
+        slug = resp.json()["slug"]
+        assert slug == "my-test-skill"
+        md = (root / slug / "SKILL.md").read_text()
+        assert "name: My Test Skill" in md
+        assert "does a thing" in md
+
+    def test_create_with_entry_code(self, client: TestClient, tmp_path: Path):
+        root = tmp_path / "repo_skills"
+        root.mkdir()
+        with patch("api.dashboard_routes._REPO_SKILLS_ROOT", root):
+            resp = client.post(
+                "/v1/skills/create",
+                json={"name": "Coded", "entry_code": "print('hi')"},
+            )
+        assert resp.status_code == 200
+        slug = resp.json()["slug"]
+        assert (root / slug / "skill.py").read_text().strip() == "print('hi')"
+        assert "entry: skill.py" in (root / slug / "SKILL.md").read_text()
+
+    def test_create_duplicate_rejected(self, client: TestClient, tmp_path: Path):
+        root = tmp_path / "repo_skills"
+        (root / "dup").mkdir(parents=True)
+        with patch("api.dashboard_routes._REPO_SKILLS_ROOT", root):
+            resp = client.post("/v1/skills/create", json={"name": "dup"})
+        assert resp.status_code == 409
+
+    def test_upload_zip(self, client: TestClient, tmp_path: Path):
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("mytool/SKILL.md", "name: My Tool\ndescription: d\n")
+            zf.writestr("mytool/skill.py", "print('ok')\n")
+        buf.seek(0)
+        root = tmp_path / "repo_skills"
+        root.mkdir()
+        with patch("api.dashboard_routes._REPO_SKILLS_ROOT", root):
+            resp = client.post(
+                "/v1/skills/upload",
+                files={"file": ("mytool.zip", buf.getvalue(), "application/zip")},
+            )
+        assert resp.status_code == 200
+        slug = resp.json()["slug"]
+        assert (root / slug / "SKILL.md").is_file()
+        assert (root / slug / "skill.py").is_file()
+
+    def test_import_claude_skill(self, client: TestClient, tmp_path: Path):
+        claude_dir = tmp_path / "claude"
+        skill = claude_dir / "cool-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("name: Cool\ndescription: c\n")
+        repo = tmp_path / "repo_skills"
+        repo.mkdir()
+        with (
+            patch("api.dashboard_routes._SKILL_DIRS", (claude_dir,)),
+            patch("api.dashboard_routes._REPO_SKILLS_ROOT", repo),
+        ):
+            resp = client.post("/v1/skills/import-claude/cool-skill")
+        assert resp.status_code == 200
+        assert (repo / "cool-skill" / "SKILL.md").is_file()
+
+    def test_import_claude_not_found(self, client: TestClient, tmp_path: Path):
+        with patch("api.dashboard_routes._SKILL_DIRS", (tmp_path / "nope",)):
+            resp = client.post("/v1/skills/import-claude/ghost")
+        assert resp.status_code == 404
+
+
+class TestSkillCreateTool:
+    @pytest.mark.asyncio
+    async def test_skill_create_executor(self, tmp_path: Path):
+        from api.agent.extras import skills as sk
+        from core.tools.workspace import Workspace
+
+        root = tmp_path / "skills"
+        root.mkdir()
+        with patch.object(sk, "_SKILLS_ROOT", root):
+            res = await sk.skill_create_execute(
+                {
+                    "name": "Agent Made",
+                    "description": "by the agent",
+                    "instructions": "do stuff",
+                    "entry_code": "print('x')",
+                },
+                Workspace.create(tmp_path),
+            )
+        assert not res.is_error
+        assert (root / "agent-made" / "SKILL.md").is_file()
+        assert (root / "agent-made" / "skill.py").is_file()

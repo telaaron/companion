@@ -223,3 +223,56 @@ async def skill_run_execute(
         content=stdout or "(no output)",
         metadata={"exit_code": 0, "skill": skill_name},
     )
+
+
+# ---------------------------------------------------------------------------
+# SkillCreate tool executor
+# ---------------------------------------------------------------------------
+
+
+def _slugify(name: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip().lower()).strip("-")
+    return s
+
+
+async def skill_create_execute(
+    input_data: dict[str, Any], workspace: Workspace
+) -> ToolResult:
+    """Scaffold a new skill folder under ``skills/``.
+
+    This lets the agent build a skill collaboratively in chat (describe what
+    the skill should do → the agent writes SKILL.md + an optional Python entry
+    script). Mirrors the dashboard ``/v1/skills/create`` endpoint.
+    """
+    name = (input_data.get("name") or "").strip()
+    if not name:
+        return ToolResult(content="Error: 'name' is required", is_error=True)
+    description = (input_data.get("description") or "").strip()
+    instructions = (input_data.get("instructions") or "").strip()
+    entry_code = (input_data.get("entry_code") or "").strip()
+
+    slug = _slugify(name)
+    if not slug:
+        return ToolResult(content="Error: could not derive a slug", is_error=True)
+
+    dest = _SKILLS_ROOT / slug
+    if dest.exists():
+        return ToolResult(
+            content=f"Error: a skill named {slug!r} already exists", is_error=True
+        )
+    dest.mkdir(parents=True, exist_ok=True)
+
+    fm = [f"name: {name}", f"description: {description}"]
+    if entry_code:
+        fm.append("entry: skill.py")
+    skill_md = "\n".join(fm) + "\n\n" + (instructions or name) + "\n"
+    (dest / "SKILL.md").write_text(skill_md, encoding="utf-8")
+    if entry_code:
+        (dest / "skill.py").write_text(entry_code.rstrip() + "\n", encoding="utf-8")
+
+    logger.info("SKILL: created slug={} entry={}", slug, bool(entry_code))
+    return ToolResult(
+        content=f"Created skill '{name}' (slug: {slug}) at skills/{slug}/. "
+        + ("Includes a runnable skill.py." if entry_code else "Documentation-only."),
+        metadata={"slug": slug, "has_entry": bool(entry_code)},
+    )

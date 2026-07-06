@@ -14,7 +14,7 @@ jobs:
   stale:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/stale@v9
+      - uses: actions/stale@v10
         with:
           # Issues: warn at 60 days idle, close at 74 (14 day grace).
           days-before-issue-stale: 60

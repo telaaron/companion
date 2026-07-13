@@ -69,7 +69,7 @@ jobs:
           enable-cache: true
       - run: uv python install 3.14
       - run: uv sync --dev
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"
@@ -134,7 +134,7 @@ jobs:
           path: packaging/dist
       - if: runner.os != 'Windows'
         run: chmod +x packaging/dist/companion-bin
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"

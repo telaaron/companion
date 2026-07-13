@@ -46,7 +46,7 @@ jobs:
         run: uv sync --dev
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"
@@ -143,7 +143,7 @@ jobs:
         run: chmod +x packaging/dist/companion-bin
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"
